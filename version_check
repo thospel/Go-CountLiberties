@@ -1,0 +1,45 @@
+#!/usr/bin/perl -w
+# $HeadURL: http://subversion.bmsg.nl/repos/kpn/trunk/src/perl-modules/Otp-Transfer/version_check $
+# $Id: version_check 5192 2012-09-07 14:43:22Z hospelt $
+# Author: Ton Hospel
+
+use strict;
+use warnings;
+
+our $VERSION = "1.000";
+
+@ARGV == 4 || die "Usage: version_check name install_lib version version_from\n";
+my ($name, $install_lib, $new_version, $module) = @ARGV;
+
+$module =~ s{^lib/}{} || die "Module '$module' does not start with lib/\n";
+my $package = $module;
+$package =~ s/\.pm\z//i || die "Module '$package' does not end on .pm\n";
+$package =~ s{/}{::}g;
+for my $inc ($install_lib, grep !m{^(?:./|)(?:blib\b|\.\z)}i, @INC) {
+    # print STDERR "Check $inc\n";
+    if (-f "$inc/$module") {
+        warn("Old install path $inc, new install path $install_lib\n") if
+            $inc ne $install_lib;
+        my $result = do "$inc/$module";
+        die "Could not load module '$inc/$module': $@" if $@;
+        $result || die "Module '$inc/$module' did not return a true value";
+        my $old_version = eval { $package->VERSION };
+        die "Could not get package $package version from '$inc/$module': $@" if $@;
+        defined $old_version ||
+            die "Undefined $package version from '$inc/$module'";
+        # print STDERR "Old version=$old_version\n";
+        last if $old_version eq $new_version;
+
+        # Sanity check
+        eval { $package->VERSION($old_version) };
+        die "package $package version $old_version from '$inc/$module is incompatible with itself: $@" if $@;
+
+        # Real check
+        eval { $package->VERSION($new_version) };
+        last if $@;
+        warn("Your install will downgrade package $name from version $old_version to $new_version. Is that really what you want ? [n]\n");
+        my $answer = <STDIN>;
+        my $ec = $answer =~ /^(?:y|yes)$/i ? 0 : 1;
+        exit $ec;
+    }
+}

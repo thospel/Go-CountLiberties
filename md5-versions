@@ -1,0 +1,59 @@
+# Generated on 2015-02-14 12:17:39 UT using /usr/local/bin/release_pm
+BEGIN
+SEMANTICS	1.013
+DIGITS		3
+RELEASE		1.000
+SUB_RELEASE	451
+DATE		2015-02-14 12:17:39
+VCS_CHECK	1
+VERSION	f63aec05402b2be3c8a3140a2a1ffd2b 1.000 Changes
+VERSION	bd2b54c8109f83505d44aa917c624cbe 1.000 CountLiberties.xs
+VERSION	70a71c428bd12ae89a95f5c918ca6fcb 1.000 MANIFEST
+VERSION	9718ab875eb65f847098d09ab6f793e6 1.000 MANIFEST.SKIP
+VERSION	d8838af67a301bee1918325d046fd710 1.000 Makefile.PL
+VERSION	d6e813db4ce411e8be44306ffac7a3a7 1.000 README
+VERSION	18b36a8d9f8f4ebcf07e90f99cf9bbef 1.000 Shape.xs
+VERSION	34e08320ab98aee0a8a3d334da828ff6 1.000 bin/count_liberties
+VERSION	05045f4bfae44ab6dfb9c47414825ca5 1.000 bin/gen_constants
+VERSION	25a1e6d4cff8e446408c65686c033ebd 1.000 bin/revision_check
+VERSION	bf8a56916bb1d1b0ca1b8b36462e0106 1.000 include/constants.hpp.in
+VERSION	1318d3c11c92003751aa260d566daf53 1.000 include/ppport.h
+VERSION	f69fb388367a71108c312536513fa74b 1.000 include/utils.hpp
+VERSION	409f74a16080de4d67cab2cc37500291 1.000 include/vector.hpp
+VERSION	00a6b21c81f179eb94ea3299f735db59 1.000 lib/Go/CountLiberties/Constants.pm
+VERSION	afbe3d434a5e88612b29f44db9003eef 1.000 lib/Go/CountLiberties/Package.pm
+VERSION	b3adc7344d43eb3eb017a02fe7ffc054 1.000 lib/Go/CountLiberties.pm
+VERSION	a346d0f2071fda58b9e26ebbc96d54a0 1.000 liberties.txt
+VERSION	4e90ec7c3fbe8195148848ddbf62ffc8 1.000 revision.cpp.in
+VERSION	8c2ccc5389b3374eda11b5bda258a536 1.000 t/00_load.t
+VERSION	41bba7ec67f3f94b693c005e8c12a568 1.000 t/01_syntax.t
+VERSION	3ce6e9d4d099cda070c05adfa2aacc1e 1.000 t/TestDrive.pm
+VERSION	67a8fde0cb0c84f7fc893b683a2972ae 1.000 typemap
+VERSION	2ad0867a7c7f684a0b69f358924e5dd6 1.000 utils.cpp
+VERSION	fd5c00f2d190a309b8afeb0e647682cc 1.000 version_check
+RELEASED 1.000 1.000 Changes
+RELEASED 1.000 1.000 CountLiberties.xs
+RELEASED 1.000 1.000 MANIFEST
+RELEASED 1.000 1.000 MANIFEST.SKIP
+RELEASED 1.000 1.000 Makefile.PL
+RELEASED 1.000 1.000 README
+RELEASED 1.000 1.000 Shape.xs
+RELEASED 1.000 1.000 bin/count_liberties
+RELEASED 1.000 1.000 bin/gen_constants
+RELEASED 1.000 1.000 bin/revision_check
+RELEASED 1.000 1.000 include/constants.hpp.in
+RELEASED 1.000 1.000 include/ppport.h
+RELEASED 1.000 1.000 include/utils.hpp
+RELEASED 1.000 1.000 include/vector.hpp
+RELEASED 1.000 1.000 lib/Go/CountLiberties.pm
+RELEASED 1.000 1.000 lib/Go/CountLiberties/Constants.pm
+RELEASED 1.000 1.000 lib/Go/CountLiberties/Package.pm
+RELEASED 1.000 1.000 liberties.txt
+RELEASED 1.000 1.000 revision.cpp.in
+RELEASED 1.000 1.000 t/00_load.t
+RELEASED 1.000 1.000 t/01_syntax.t
+RELEASED 1.000 1.000 t/TestDrive.pm
+RELEASED 1.000 1.000 typemap
+RELEASED 1.000 1.000 utils.cpp
+RELEASED 1.000 1.000 version_check
+END

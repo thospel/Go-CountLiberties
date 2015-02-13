@@ -1,0 +1,731 @@
+#!/usr/bin/perl -w
+use strict;
+use warnings;
+
+our $VERSION = "1.000";
+
+# based on the border state idea in http://homepages.cwi.nl/~tromp/go/gostate.ps
+
+# If the program runs as /foobar/bin/program, find libraries in /foobar/lib
+use FindBin qw($Bin $Script);
+BEGIN {
+    # Even on windows FindBin uses / in the reported path
+    $Bin =~
+        ($^O eq "MSWin32" ?
+         qr{^((?:[A-Z]:)?(?:/[a-zA-Z0-9_:.~ -]+)*)/[a-zA-Z0-9_.-]+/*\z} :
+         qr{^((?:/[a-zA-Z0-9_:.-]+)*)/[a-zA-Z0-9_.-]+/*\z}) ||
+         die "Could not parse bin directory '$Bin'";
+    # Use untainted version of lib
+    require lib;
+    # Support a simple --blib option for pre-install testing
+    "lib"->import(@ARGV && $ARGV[0] eq "--blib" ? ("$1/blib/lib", "$1/blib/arch") : "$1/lib");
+}
+
+use Time::HiRes qw(time);
+use Getopt::Long 2.24 qw(:config bundling);
+use Data::Dumper;
+$Data::Dumper::Indent = 1;
+$Data::Dumper::Sortkeys = 1;
+
+use Go::CountLiberties;
+use Go::CountLiberties::Constants qw(BLACK WHITE EDGE);
+# use Go::CountLiberties;
+
+my $signatures	= 1;
+my $cost_type	= 0;
+
+my @args = @ARGV;
+die "Could not parse your command line. Try $0 -h\n" unless
+    GetOptions("blib!"		=> \my $blib,
+               "nice:o"		=> \my $nice,
+               "restart!"	=> \my $restart,
+               "tcmalloc"	=> \my $tcmalloc,
+               "jemalloc"	=> \my $jemalloc,
+               "llmalloc"	=> \my $llmalloc,
+               "libcmalloc"	=> \my $libcmalloc,
+               "hugepages:s"	=> \my $hugepages,
+               "profile:s"	=> \my $profile,
+               "t|threads=o"	=> \my $nr_threads,
+               "save_thread!"	=> \my $save_thread,
+               "stats!"		=> \my $show_stats,
+               "sizes!"		=> \my $show_sizes,
+               "solution!"	=> \my $solution,
+               "map_load_factor=f"	=> \my $map_load_factor,
+               "backbone_load_factor=f"	=> \my $backbone_load_factor,
+               "generalize!"	=> \$signatures,
+               "dump!"		=> \my $dump,
+               "debug_history!"	=> \my $debug_history,
+               "quiet"		=> \my $quiet,
+               "version!"	=> \my $version,
+               "U|unsafe!"	=> \my $unsafe,
+               "h|help!"	=> \my $help);
+
+if ($restart) {
+    die "Please do not give an explicit --restart\n";
+} elsif (!defined $restart) {
+    my @restart = qw(--norestart);
+
+    if (defined $hugepages) {
+        $tcmalloc = 1;
+        die "Don't know how to use huge pages with jemalloc" if $jemalloc;
+        die "Don't know how to use huge pages with llmalloc" if $llmalloc;
+        die "Don't know how to use huge pages with libcmalloc" if $libcmalloc;
+        if ($hugepages eq "") {
+            my $mount_file = "/proc/mounts";
+            open(my $fh, $mount_file) || die "Could not open 'mount_file': $!";
+            local $_;
+            my @places;
+            while (<$fh>) {
+                my ($mount_point) = /^\S+\s+(\S+)\s+hugetlbfs\s/ or next;
+                push @places, $mount_point;
+            }
+            @places || die "No hugetlbfs mount points found\n";
+            for my $p (@places) {
+                if (-d $p && -w $p) {
+                    $hugepages = $p;
+                    last;
+                }
+            }
+            die "Could not use any of '@places' for huge page support" if
+                $hugepages eq "";
+        }
+        $hugepages =~ s{/*\z}{/};
+        stat($hugepages) || die "Could not stat '$hugepages': $!\n";
+        -w _ || die "Do not have write access on '$hugepages'\n";
+        my $nr_huge_file = "/proc/sys/vm/nr_hugepages";
+        open(my $fh, $nr_huge_file) || die "Could not open 'nr_huge_file': $!";
+        my $n = <$fh>;
+        defined $n || die "Could not read from 'nr_huge_file'";
+        $n =~ /^([0-9]+)\s*$/ || die "Non number from '$nr_huge_file': $n";
+        $1 > 0 || die "$nr_huge_file should contain a positive number";
+
+        $restart = 1;
+        $ENV{TCMALLOC_MEMFS_MALLOC_PATH} = $hugepages;
+    }
+
+    require Config;
+    my @libs = split " ", $Config::Config{libspath};
+    if (!$libcmalloc) {
+        my @mallocs;
+        if ($tcmalloc || $jemalloc || $llmalloc) {
+            push @mallocs, "libllalloc.so"  if $llmalloc;
+            push @mallocs, "libtcmalloc.so" if $tcmalloc;
+            push @mallocs, "libjemalloc.so" if $jemalloc;
+        } else {
+            @mallocs = qw(libjemalloc.so libtcmalloc.so libllalloc.so);
+        }
+        my $malloc;
+      MALLOC:
+        for my $m (@mallocs) {
+            for my $l (@libs) {
+                if (-f "$l/$m") {
+                    $malloc = "$l/$m";
+                    last MALLOC;
+                }
+            }
+        }
+
+        if ($malloc) {
+            $restart = 1;
+            $ENV{LD_PRELOAD} = $ENV{LD_PRELOAD} ?
+                "$malloc $ENV{LD_PRELOAD}" : $malloc;
+        } else {
+            die "Did not find any of @mallocs in any of @libs\n" if
+                $tcmalloc || $jemalloc || $llmalloc;
+            warn("Did not find any of @mallocs in any of @libs. Will fall back to standard malloc\n");
+        }
+    }
+
+    my @profiler = qw(libprofiler.so);
+    my $profiler;
+  PROFILER:
+    for my $p (@profiler) {
+        for my $l (@libs) {
+            if (-f "$l/$p") {
+                $profiler = "$l/$p";
+                last PROFILER;
+            }
+        }
+    }
+    if ($profiler) {
+        $restart = 1;
+        $ENV{LD_PRELOAD} = $ENV{LD_PRELOAD} ?
+            "$profiler $ENV{LD_PRELOAD}" : $profiler;
+        if (defined $profile) {
+            $profile = "$Script.pprof" if $profile eq "";
+            $ENV{CPUPROFILE}=$profile;
+        }
+    } else {
+        warn("Could not find any of @profiler in any of @libs. Will turn off the profiling option\n");
+    }
+
+    if (defined $nice) {
+        $restart = 1;
+        $nice ||= 10;
+    }
+
+    # print "preload=$ENV{LD_PRELOAD}\n";
+    if ($restart) {
+        if (@args && $args[0] eq "--blib") {
+            splice(@args, 1, 0, @restart);
+        } else {
+            unshift @args, @restart;
+        }
+        exec(defined $nice ? ("nice", "-n", $nice || 10) : (), $^X, "$Bin/$Script", @args);
+        die "Boem";
+    }
+}
+
+if (!defined $nr_threads) {
+    $nr_threads = 1;
+    if (open(my $fh, "/proc/cpuinfo")) {
+        my $cpu = 0;
+        local $_;
+        while (<$fh>) {
+            ++$cpu if /^processor\s*:/i;
+        }
+        $nr_threads = $cpu if $cpu;
+    }
+}
+
+# $save_thread = $nr_threads == 1 ? 1 : 0 if !defined $save_thread;
+$save_thread = 1 if !defined $save_thread;
+
+$| = 1;
+
+sub lower_bound {
+    # The shapes that establish these lower bounds are shown at the bottom
+    # Hypothesis: These numbers are exact for any board size
+    my ($m, $n) = @_;
+    ($m, $n) = ($n, $m) if $m < $n;
+    # So now $m >= $n
+    if ($n >= 4) {
+        return $n*(2*$m-1)/3 if $n % 3 == 0;
+        return $m*(2*$n-1)/3 if $m % 3 == 0;
+        return ((2*$n-1)*(2*$m-1)+5)/6 if $m % 3 == 1 && $n % 3 == 1;
+        return ((2*$n-1)*(2*$m-1)+3)/6;
+    } elsif ($n == 3) {
+        return 2*$m;
+    } elsif ($n == 2) {
+        return $m == 3 ? 4 : $m;
+    } elsif ($n == 1) {
+        return $m >= 3 ? 2 : $m >= 2 ? 1 : 0;
+    } else {
+        die "Bad call";
+    }
+}
+
+my $history_bits = Go::CountLiberties->history_bits ||
+    die "Assertion: No history bits";
+if ($show_sizes) {
+    printf "Counter: %6d bytes\n", Go::CountLiberties->countliberties_size();
+    printf "EntrySet:%6d bytes\n", Go::CountLiberties->entry_set_size();
+    printf "ThreadData:%4d bytes\n", Go::CountLiberties->thread_data_size();
+    printf "Entry:   %6d bytes\n", Go::CountLiberties->entry_size();
+    printf "History: %6d bits\n", $history_bits;
+}
+printf("%s revision %s, parent %s\n",
+       Go::CountLiberties->revision_system,
+       Go::CountLiberties->current_revision, Go::CountLiberties->parent_revision) if !$quiet;
+for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
+                @ARGV == 1 ? $ARGV[0] :
+                1..19) {
+    printf("Height = %2d, %dx%d will be in [%d, %d], %d thread%s\n",
+           $height, $height, $height,
+           lower_bound($height, $height), int((2*$height*$height+2)/3),
+           $nr_threads, $nr_threads ==1 ? "" : "s");
+
+    my $counter = Go::CountLiberties->new($height, $nr_threads, $save_thread);
+    $counter->map_load_factor($map_load_factor) if
+        defined $map_load_factor;
+    $counter->backbone_load_factor($backbone_load_factor) if
+        defined $backbone_load_factor;
+
+    my $total_start      = time;
+    my $total_user_start = times;
+
+    my $sweep = 0;
+    my $generalized = !$signatures;
+    my (@max, %signatures, @best_column);
+
+    my @nr_keys_first =
+        $height < 2 ? (1) x ($height * $height) :
+        ((0) x $height, (1) x ($height * ($height-2)), (0) x $height);
+
+    my @best_filter = map [], 1..$height;
+    while (my $target_width = @best_filter) {
+        my $solution_start      = time;
+        my $solution_user_start = times;
+
+        # print Dumper($best_filter[-1]);
+
+        $counter->target_width($target_width);
+        my (@try_filter, @maximum_column, @good_filter);
+        # my $unknown = -1;
+        my $unknown = 0;
+        if ($solution) {
+            if ($cost_type) {
+                for my $i (0..$target_width*$height-1) {
+                    $counter->cost($i, $nr_keys_first[$i]);
+                }
+            }
+            for my $f (@{$best_filter[-1]}) {
+                my ($x0, $y0, $bit) = @$f;
+                $counter->filter($x0, $y0, $bit);
+            }
+            if (defined(my $column = $best_column[$target_width-1])) {
+                $counter->record_last_column($column);
+            }
+            my $need = $counter->record_need;
+            printf("Going for %dx%d, already know %d bits%s\n",
+                   $target_width, $height, $target_width*$height-$need,
+                   $need ? sprintf(", still need %d bit%s", $need, $need == 1 ? "" : "s") : "") if $sweep != 0 && !$quiet;
+        }
+
+        while ($solution || $sweep == 0) {
+            if ($solution) {
+                if ($cost_type) {
+                    $counter->record_by_cost();
+                } else {
+                    for my $i (1 .. $history_bits) {
+                        $counter->record_need || last;
+                        ++$unknown;
+                        my $x0 = $target_width - 1 - $unknown % $target_width;
+                        my $y0 = $unknown / $target_width % $height;
+                        redo if $counter->filter($x0, $y0);
+                        $counter->record($x0, $y0);
+                    }
+                }
+                $counter->record_size || last;
+                $counter->record_sort;
+            }
+            my $mem = $counter->get_memory();
+            my $start      = time;
+            my $user_start = times;
+            my $x = 0;
+            my (@nr_keys, @times);
+            # Do a board sweep
+            while (1) {
+                ++$x;
+                last if $x > $target_width && $sweep;
+                my $sub_start = time;
+                my $user_sub_start = times;
+                for my $y (1..$height) {
+                    if ($x > $target_width) {
+                        $counter->run_round($x - 1, $y - 1);
+                    } else {
+                        printf("-- [%2d,%2d] %2d, %2d\n",
+                               $x, $y,
+                               $counter->filter($x-1, $y-1),
+                               $counter->record_map($x-1, $y-1)) if $debug_history;
+                        my $run_time = times;
+                        $counter->run_round($x - 1, $y - 1);
+                        $run_time = times() - $run_time;
+                        push @times, $run_time < 0 ? 0 : $run_time;
+                    }
+                    push @nr_keys,$counter->nr_keys if $solution || $show_stats;
+                    # print "[$x, $y] ", Dumper($counter->signature, { $counter->key_values});
+                    print "[$x, $y] ", Dumper({ $counter->key_values}) if $dump;
+                    if ($show_stats) {
+                        my $real_min = $counter->real_min;
+                        my $real_max = $counter->real_max;
+                        my $max_real_max = $counter->max_real_max;
+                        my $offset   = $counter->_offset;
+                        my $max = $counter->maximum;
+                        # nr_keys_min is not very interesting, always in [1,4]
+                        # (but once filtering we zoom in on a particular index
+                        # and the minimum can grow to the maximum)
+                        # my $nr_keys_min = $counter->nr_keys_min;
+                        my $nr_keys_max = $counter->nr_keys_max;
+                        my $nr_keys = $nr_keys[-1];
+                        my $nr_classes = $counter->nr_classes_non_empty;
+                        printf("%sRange [%2d, %2d, %2d, %2d],%10d keys in %7d classes [%4.0f,%7d]\n",
+                               $x > $target_width ? "" :
+                                   sprintf("F%s R%s ",
+                                           $counter->filter($x-1, $y-1) == 0 ? " " : $counter->filter($x-1, $y-1) < 0 ? "0" : "1",
+                                           $counter->record_map($x-1, $y-1) == -1 ? "  " : sprintf("%2d", $counter->record_map($x-1, $y-1))),
+                               $real_min, $max - $offset, $real_max,
+                               $max_real_max, $nr_keys, $nr_classes,
+                               $nr_keys/$nr_classes, $nr_keys_max);
+                    }
+                }
+
+                if ($sweep == 0) {
+                    my $max = $counter->maximum;
+                    push @max, $max;
+                    my $expect = lower_bound($x, $height);
+                    die sprintf("HYPOTHESIS FAIL: Expected %d, got %d\n",
+                           $expect, $max) if $expect != $max;
+                }
+
+                if ($solution) {
+                    if ($x == $target_width) {
+                        if ($cost_type > 0) {
+                            @nr_keys_first = @nr_keys if $sweep == 0;
+                            for my $pos (0..$#nr_keys) {
+                                $counter->cost($pos, $nr_keys[$pos]);
+                            }
+                        } else {
+                            @nr_keys_first = @times if $sweep == 0;
+                            for my $pos (0..$#times) {
+                                $counter->cost($pos, $times[$pos]);
+                            }
+                        }
+                        if ($debug_history) {
+                            for my $record ($counter->records) {
+                                printf("level[%2d] filter[%d][%d] = %2d\n",
+                                       $x, $record->[0], $record->[1],
+                                       $record->[2]);
+                            }
+                        }
+                        push @{$best_filter[-1]}, $counter->records;
+                        $counter->record_flush;
+                        $counter->record_last_column($counter->maximum_column);
+                    } elsif ($best_filter[$x-1] &&
+                                 !$counter->no_solution &&
+                                 $max[$x-1] == $counter->maximum) {
+                        $maximum_column[$x-1] = $counter->maximum_column;
+                        $good_filter[$x-1] = @{$best_filter[-1]};
+                        print "level[$x] $good_filter[$x-1] potential bits\n" if $debug_history;
+                        my @collect;
+                        for my $record ($counter->records) {
+                            # List is sorted on $x0, so once over it stays over
+                            last if $record->[0] >= $x;
+                            print "level[$x] filter[$record->[0]][$record->[1]] =$record->[2]\n" if $debug_history;
+                            push @collect, $record;
+                        }
+                        $try_filter[$x-1] = \@collect;
+                    } elsif ($debug_history) {
+                        print("best_filter=", $best_filter[$x-1] ? 1 : 0,
+                              ", solution=", $counter->no_solution ? 0 : 1,
+                              ", max should be $max[$x-1] and is ",
+                              $counter->maximum, "\n");
+                    }
+                }
+
+                if ($sweep == 0 || $x == $target_width) {
+                    die "At target column $x during processing but lost the solution (sweep=$sweep, [$x, $height]" if $counter->no_solution;
+                    die "Lost the maximum at width $x [got, ", $counter->maximum, " expected $max[$x-1]" if $max[$x-1] != $counter->maximum;
+                }
+
+                my $signature = $counter->signature;
+                my $period = time - $sub_start;
+                my $user_period = times - $user_sub_start;
+                my $mem = $counter->get_memory;
+                my $nr_keys = @nr_keys ? $nr_keys[-1] : $counter->nr_keys;
+                printf(" width %2d:%4d (%6.1f s,%10d columns, %016X sig,%9d KiB)\n",
+                       $x, $counter->maximum, $period, $nr_keys,
+                       $signature, $mem/1024) if !$quiet;
+                if ($sweep == 0 && !$generalized) {
+                    $signature .= " " . $nr_keys;
+                    if (my $x0 = $signatures{$signature}) {
+                        my $period = $x - $x0;
+                        my @period = map "+" . ($max[$_] - $max[$_-1]), $x0..$x-1;
+
+                        # Reduce to shortest period
+                        # (should not be needed)
+                      PERIOD:
+                        for my $p (1..@period/2) {
+                            @period % $p == 0 || next;
+                            for my $i (0..$#period-$p) {
+                                $period[$i] == $period[$i+$p] || next PERIOD;
+                            }
+                            printf("  Period reduction from %d to %d. Probably unstable pruning.\n", scalar @period, $p);
+                            @period = splice(@period, 0, $p);
+                            last;
+                        }
+
+                        # Extend regularity back as far as it goes
+                        while ($x0-1 >= 1) {
+                            last if $max[$x0-1] - $max[$x0-2] != $period[-1];
+                            my $p = pop @period;
+                            unshift @period, $p;
+                            --$x0;
+                        }
+                        my $time_period = time - $start;
+                        my $user_time_period = times - $user_start;
+                        printf("  General rule for width >= %d: %d [%s] (%d * %.1fs user, %.1fs real)\n",
+                               $x0, $max[$x0-1], "@period",
+                               $nr_threads, $user_time_period/$nr_threads,
+                               $time_period);
+                        $generalized = 1;
+                        $solution && $x < $target_width || last;
+                    } else {
+                        $signatures{$signature} = $x;
+                    }
+                } elsif ($x >= $target_width) {
+                    my $period = time - $start;
+                    my $user_period = times - $user_start;
+                    my $need = $counter->record_need;
+                    printf("  %2dx%2d: %d (%d * %.1fs user, %.1fs real)%s\n",
+                           $x, $height, $counter->maximum, $nr_threads,
+                           $user_period/$nr_threads, $period,
+                           $solution && $need ? sprintf(", still need %d bit%s", $need, $need == 1 ? "" : "s") : "") if
+                               !$quiet || $sweep == 0;
+                    last;
+                }
+            }
+            $counter->clear;
+            ++$sweep;
+            $history_bits || last;
+        }
+
+        last if !$solution;
+        for my $level (0..$target_width-2) {
+            $try_filter[$level] || next;
+            @{$try_filter[$level]} = grep($_->[0] <= $level, @{$try_filter[$level]}, @{$best_filter[-1]}[0..$good_filter[$level]-1]);
+            printf("Level %d: try %d, best %d\n", $level+1,
+                   scalar @{$try_filter[$level]},
+                   scalar @{$best_filter[$level]}) if $debug_history;
+            if (@{$try_filter[$level]} > @{$best_filter[$level]}) {
+                $best_filter[$level] = $try_filter[$level];
+                $best_column[$level] = $maximum_column[$level];
+            }
+        }
+        # print Dumper $filter[0];
+
+        my $shape = Go::CountLiberties::Shape->new;
+        $counter->nr_keys == 1 || die "Initial nr_keys should be 1";
+        my $old_column;
+        # my ($column) = $counter->keys;
+        my $reversed = 0;
+        for my $y (-1..$height) {
+            $shape->set(-1, $y, EDGE);
+        }
+        for my $x (1..$target_width) {
+            $shape->set($x-1, -1, EDGE);
+            $shape->set($x-1, $height, EDGE);
+            for my $y (1..$height) {
+                my $y0 = $counter->run_round($x - 1, $y - 1);
+                $y0 = $height-1-$y0 if $reversed;
+                $shape->set($x-1, $y0, WHITE) if $counter->filter($x-1, $y-1) > 0;
+                $reversed = ($reversed xor $counter->reversed);
+                # print "pos=$y0 $column $reversed $counter->filter($x-1, $y-1)\n";
+                # print "[$x, $y] ", Dumper({ $counter->key_values}) if $target_width == 1;
+
+                $counter->nr_keys == 1 || die "nr_keys at [$x,$y] should be 1";
+                # ($column) = $counter->keys;
+            }
+            if ($x != $target_width && !$counter->no_solution && $counter->maximum == $max[$x-1] && $best_filter[$x-1]) {
+                my $s = $shape->clone;
+                for my $y (-1..$height) {
+                    $s->set($x, $y, EDGE);
+                }
+                my $liberties = $s->liberties(WHITE);
+                my $nr_liberties = $liberties->keys;
+                print "Extra solution ${x}x$height: $nr_liberties liberties\n";
+                print $s->as_string;
+                $max[$x-1] == $nr_liberties ||
+                    die "Expected $max[$x-1] liberties, got $nr_liberties";
+                # print $liberties->as_string;
+                delete $best_filter[$x-1];
+            }
+        }
+        die "At target column $target_width in post processing but lost the solution" if
+            $counter->no_solution;
+
+        for my $y (-1..$height) {
+            $shape->set($target_width, $y, EDGE);
+        }
+        my $liberties = $shape->liberties(WHITE);
+        my $nr_liberties = $liberties->keys;
+
+        delete $best_filter[$target_width-1];
+        $counter->clear;
+
+        my $solution_period      = time  - $solution_start;
+        my $solution_user_period = times - $solution_user_start;
+
+        printf("Solution %dx%d: %d liberties (%d * %.1fs user, %.1fs real)\n",
+               $target_width, $height, $nr_liberties,
+               $nr_threads, $solution_user_period/$nr_threads, $solution_period);
+        print $shape->as_string;
+        $max[$target_width-1] == $nr_liberties ||
+            die "Expected $max[$target_width-1] liberties, got $nr_liberties";
+        # print $liberties->as_string;
+    }
+    if ($solution) {
+        my $total_period      = time  - $total_start;
+        my $total_user_period = times - $total_user_start;
+        printf(" Generated all boards with heighth %2d: (%d * %.1fs user, %.1fs real)\n",
+               $height, $nr_threads, $total_user_period / $nr_threads, $total_period);
+    }
+}
+# print Go::CountLiberties->malloc_stats;
+# print Go::CountLiberties->malloc_property("generic.heap_size"), "\n";
+my $jemalloc_debug = 0;
+if ($jemalloc_debug) {
+    print "version: ", Go::CountLiberties->malloc_property("version", 7), "\n";
+    for my $name (qw(debug dss fill lazy_lock mremap munmap prof prof_libgcc prof_libunwind stats tcache tls utrace valgrind xmalloc)) {
+        print "$name: ", Go::CountLiberties->malloc_property("config.$name", 3), "\n";
+    }
+    print "allocated: ", Go::CountLiberties->malloc_property("stats.allocated", 4), "\n";
+    print "active: ", Go::CountLiberties->malloc_property("stats.active", 4), "\n";
+    print "mapped: ", Go::CountLiberties->malloc_property("stats.mapped", 4), "\n";
+}
+
+
+__END__
+Board n x m, m >= n
+
+n=1: (proven)
+   Examples:
+   ***   ***   ***   ***
+   *.*   *O*   *.*   *.*
+   ***   *.*   *O*   *O*
+         ***   *.*   *O*
+               ***   *.*
+                     ***
+
+  General rule:
+    m=1: 0
+    m=2: 1
+    m>2: 2
+
+n=2: (proven)
+   Examples:
+   ****   ****   ****   ****   ****
+   *O.*   *O.*   *..*   *O.*   *O.*
+   ****   *O.*   *OO*   *O.*   *O.*
+          ****   *..*   *O.*   *O.*
+                 ****   *O.*   *O.*
+                        ****   *O.*
+                               ****
+  General rule:
+    m =3: 4
+    m!=3: m
+
+n=3 (proven)
+   Examples:
+   *****   *****   *****   *****
+   *.O.*   *.O.*   *.O.*   *.O.*
+   *****   *.O.*   *.O.*   *.O.*
+           *****   *.O.*   *.O.*
+                   *****   *.O.*
+                           *****
+  General rule:
+    2m
+
+n>=4 (proven for n<=21)
+ n=0 (mod 3)
+   Examples:
+   ***********   ***********   ***********   **************
+   *.........*   *.........*   *.........*   *............*
+   *.OOOOOOO.*   *.OOOOOOO.*   *.OOOOOOO.*   *.OOOOOOOOOO.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+   ***********   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
+                 ***********   *.O..O..O.*   *.O..O..O..O.*
+                               ***********   **************
+  (so prefer connecting along the short side)
+  General rule:
+    n(2m-1)/3
+
+ m=0 (mod 3)
+   Examples:
+   ******   *******   *********   **********
+   *....*   *.....*   *.......*   *........*
+   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
+   *.O..*   *.O...*   *.O.....*   *.O......*
+   *.O..*   *.O...*   *.O.....*   *.O......*
+   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
+   *.O..*   *.O...*   *.O.....*   *.O......*
+   *.O..*   *.O...*   *.O.....*   *.O......*
+   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
+   *.O..*   *.O...*   *.O.....*   *.O......*
+   *.O..*   *.O...*   *.O.....*   *.O......*
+   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
+   *....*   *.....*   *.......*   *........*
+   ******   *******   *********   **********
+
+  (if the short side side is not a multiple of 3 but the long side is)
+  General rule:
+    m(2n-1)/3
+
+  n=1 (mod 3) and m=1 (mod 3)
+   Examples:
+   ******   ******   ******   *********   ************
+   *....*   *....*   *....*   *.......*   *..........*
+   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
+   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
+   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
+   *.OOO*   *.OOO*   *.OOO*   *.O..OOO*   *.O..O..OOO*
+   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
+   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
+   ******   *.OOO*   *.OOO*   *.O..OOO*   *.O..O..OOO*
+            *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
+            *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
+            ******   *.OOO*   *********   ************
+                     *.O..*
+                     *.O..*
+                     ******
+  General rule:
+    (m(2n-1)-n+3)/3 = ((2n-1)(2m-1)+5)/6
+
+  n=1 (mod 3) and m=2 (mod 3)
+   Examples:
+   ******   ******   ******   *********   ************
+   *....*   *....*   *....*   *.......*   *..........*
+   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
+   *.O..*   *.O..*   *.O..*   *.O.....*   *.O........*
+   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
+   *.O..*   *.O..*   *.O..*   *.O.....*   *.O........*
+   *.O..*   *.O..*   *.O..*   *.O.....*   *.O........*
+   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
+   *....*   *.O..*   *.O..*   *.O.....*   *.O........*
+   ******   *.O..*   *.O..*   *.O.....*   *.O........*
+            *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
+            *....*   *.O..*   *.......*   *..........*
+            ******   *.O..*   *********   ************
+                     *.OOO*
+                     *....*
+                     ******
+  General rule:
+    ((2n-1)(2m-1)+3)/6
+
+  n=2 (mod 3) and m!=0 (mod 3)
+   Examples:
+   *******   *******   *******   **********   *************
+   *.....*   *.....*   *.....*   *........*   *...........*
+   *.OOO.*   *.OOO.*   *.OOO.*   *.OOOOOO.*   *.OOOOOOOOO.*
+   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+   *******   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+             *******   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+                       *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
+                       *******   **********   *************
+  General rule:
+    ((2n-1)(2m-1)+3)/6;
+
+Alternative ways to implement the m=1 (mod 3) and n=1 (mod 3) case:
+   19 x 19, 229 liberties)
+   *********************   *********************
+   *...................*   *...................*
+   *.OOOOOOOOOOOOOOOOOO*   *.OOOOOOOOOOOOOOOOO.*
+   *.O.................*   *.O..O..O..O..O...O.*
+   *.O.................*   *.O..O..O..O..O...O.*
+   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O.OOO.*
+   *.O.................*   *.O..O..O..O..O...O.*
+   *.O.................*   *.O..O..O..O..O...O.*
+   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O.OOO.*
+   *.O..O.....O.....O..*   *.O..O..O..O..O...O.*
+   *.O..O..O..O..O..O..*   *.O..O..O..O..O...O.*
+   *.O.....O.....O.....*   *.O..O..O..O..O.OOO.*
+   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O...O.*
+   *.O.................*   *.O..O..O..O..O...O.*
+   *.O.................*   *.O..O..O..O..O.OOO.*
+   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O...O.*
+   *.O.................*   *.O..O..O..O..O...O.*
+   *.O.................*   *.O..O..O..O..O.OOO.*
+   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O...O.*
+   *...................*   *.O..O..O..O..O...O.*
+   *********************   *********************

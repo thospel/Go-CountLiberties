@@ -1,0 +1,19 @@
+/* $Version: 1.000 $ */
+
+#include "constants.hpp"
+
+extern char const revision_system[] =
+    // BEGIN REVISION_SYSTEM
+    // END   REVISION_SYSTEM
+extern char const parent_revision[] =
+    // BEGIN PARENT_REVISION
+    // END   PARENT_REVISION
+extern char const current_revision[] =
+    // BEGIN CURRENT_REVISION
+    // END   CURRENT_REVISION
+extern char const compile_date[] =
+    // BEGIN COMPILE_DATE
+    // END   COMPILE_DATE
+extern char const compile_time[] =
+    // BEGIN COMPILE_TIME
+    // END   COMPILE_TIME

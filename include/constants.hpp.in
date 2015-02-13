@@ -1,0 +1,277 @@
+/* $Version: 1.000 $ */
+
+#ifndef constants_hpp
+# define constants_hpp 1
+
+// typedef unsigned int uint;
+
+#include <cstddef>
+#include <cstdint>
+
+#define MAGIC	1	/* Support magic */
+
+#define STATIC		static
+#define HOT		__attribute__((__hot__))
+#define COLD		__attribute__((__cold__))
+// pure means does not modify any (non const) global memory.
+#define PURE		__attribute__((__pure__))
+// const means does not read/modify any (non const) global memory.
+#define FUNCTIONAL	__attribute__((__const__))
+#define NORETURN	__attribute__((__noreturn__))
+#define NOINLINE	__attribute__((__noinline__))
+#define INLINE		static inline
+#define RESTRICT	__restrict__
+#define UNREACHABLE	__builtin_unreachable()
+#define ALIGNED(x)	__attribute__((aligned (x)))
+// #define ALIGNED(x)	alignas(x)
+#define CACHE_ALIGNED	ALIGNED(_CACHE_LINE)
+#define VECTOR_ALIGNED	ALIGNED(_VECTOR_ALIGNMENT)
+
+#define _CACHE_LINE		64
+#define _VECTOR_ALIGNMENT	16
+
+/* We already get these from perl.h, but I don't like them.
+   These versions allow LIKELY(ptr) etc. */
+#undef LIKELY
+#undef UNLIKELY
+/* Having LIKELY/UNLIKELY gives about 1% speedup on an intel Core Duo CPU */
+#define LIKELY(x)	__builtin_expect(!!(x),1)
+#define UNLIKELY(x)	__builtin_expect(!!(x),0)
+// #define LIKELY(x)	(x)
+// #define UNLIKELY(x)	(x)
+
+#ifdef NULL
+# undef NULL
+# define NULL nullptr
+#endif /* NULL */
+
+#ifdef LITTLE_ENDIAN
+static_assert(LITTLE_ENDIAN == $LITTLE_ENDIAN$,
+              "LITTLE_ENDIAN from perl differs from LITTLE_ENDIAN from compiler");
+# undef LITTLE_ENDIAN
+#endif
+
+#ifdef BIG_ENDIAN
+static_assert(BIG_ENDIAN == $BIG_ENDIAN$,
+              "BIG_ENDIAN from perl differs from BIG_ENDIAN from compiler");
+# undef BIG_ENDIAN
+#endif
+
+#ifdef BYTE_ORDER
+static_assert(BYTE_ORDER == $BYTE_ORDER$,
+              "BYTE_ORDER from perl differs from BYTE_ORDER from compiler");
+# undef BYTE_ORDER
+#endif
+
+enum {
+    LITTLE_ENDIAN = $LITTLE_ENDIAN$,
+    BIG_ENDIAN    = $BIG_ENDIAN$,
+    BYTE_ORDER    = $BYTE_ORDER$,
+};
+
+// Variables surrounded by $$ get their values from
+// lib/Go/CountLiberties/Constants.pm
+// Same with %%, but these are substituted in hex
+namespace constants {
+    constexpr float DEFAULT_NO_MERCY	= $DEFAULT_NOMERCY$;
+    constexpr float DEFAULT_CLARITY	= $DEFAULT_CLARITY$;
+    constexpr float DEFAULT_RAVE_BIAS	= $DEFAULT_RAVE_BIAS$;
+    constexpr float DEFAULT_SCORE_BONUS	= $DEFAULT_SCORE_BONUS$;
+    constexpr float DEFAULT_SCORE_SCALE	= $DEFAULT_SCORE_SCALE$;
+
+    constexpr float EPSILON		= 1e-7;
+    enum {
+        /* Current x86 processors have 64 byte cache lines, e.g.:
+           # x86info -c
+           Cache info
+           L1 Instruction cache: 32KB, 8-way associative. 64 byte line size.
+           L1 Data cache: 32KB, 8-way associative. 64 byte line size.
+           L2 cache: 3MB, 12-way associative. 64 byte line size. Unified on-die.
+        */
+        CACHE_LINE		= _CACHE_LINE,
+        VECTOR_ALIGNMENT	= _VECTOR_ALIGNMENT,
+
+        LITTLE_ENDIAN		= $LITTLE_ENDIAN$,
+        BIG_ENDIAN		= $BIG_ENDIAN$,
+        BYTE_ORDER		= $BYTE_ORDER$,
+
+        // Setting UNCHAIN to true means ChainMemory only gets used once
+        // It is marginally faster and should lead to faster copies but means
+        // we use more memory and have to compact ever so often
+        // (should also be called as part of of Board::study()
+        UNCHAIN			= false,
+        LIBERTY_CACHE		= false,
+        UNIFORM_RANDOM		= false,
+        LAST_SUICIDE		= false,
+
+        DEFAULT_SIZE		= 19,
+
+        MAX_PASSES		= $MAX_PASSES$,	// Game ends after this many passes
+
+        DEFAULT_IKOMI		= $DEFAULT_IKOMI$,	// Half for black with 1 bonus, so 6.5 komi for white
+        DEFAULT_EXPANSION	= $DEFAULT_EXPANSION$,
+
+	// Do all score calculation with this factor. Basically allows us to
+        // make half integer komi into an integer
+        PRISONER_FACTOR		= 2,
+
+        /* Possible color values */
+        EMPTY			= $EMPTY$,
+        BLACK			= $BLACK$,
+        WHITE			= $WHITE$,
+        EDGE			= $EDGE$,
+        COLOR_MAX		= $COLOR_MAX$,
+        COLORS			= $COLORS$,
+
+        GUARD_X			= $GUARD_X$,
+        GUARD_Y			= $GUARD_Y$,
+        MAX_SIZE_X		= $MAX_SIZE_X$,
+        MAX_SIZE_Y		= $MAX_SIZE_Y$,
+        /*
+          OFFSET_X is the offset to the next row. Must be at least
+          MAX_SIZE_X+GUARD_X but is alllowed to be larger if you want some
+          special alignment for the next row
+        */
+        OFFSET_X		= $OFFSET_X$,
+        MAX_AREA		= MAX_SIZE_X * MAX_SIZE_Y,	// $MAX_AREA$
+        MAX_RANGE		= (MAX_SIZE_Y-1) * OFFSET_X+MAX_SIZE_X,	// $MAX_RANGE$
+        MAX_RANGE2		= $MAX_RANGE2$,		// Next power of 2
+
+        MCTS_DESCENTS_AREA	= $MCTS_DESCENTS_AREA$,
+
+        // Maximum number of chains possible on the board. For 19x19 this is 277
+        // Then +1 because we might need 1 extra for the current move just
+        // before we remove captured chains
+        MAX_CHAINS		= $MAX_CHAINS$+1,
+
+        /*
+          Chain no bigger than this can only have shared liberties through empty
+          triangles
+        */
+        SAFE_STONES		= $SAFE_STONES$,
+
+        BLACK_SHIFT		= $BLACK_SHIFT$,
+        WHITE_SHIFT		= $WHITE_SHIFT$,
+        COLOR_SHIFT		= $COLOR_SHIFT$,
+
+        ORTHOGONAL_SHIFT	= $ORTHOGONAL_SHIFT$,
+        UP_SHIFT		= $UP_SHIFT$,
+        DOWN_SHIFT		= $DOWN_SHIFT$,
+        LEFT_SHIFT		= $LEFT_SHIFT$,
+        RIGHT_SHIFT		= $RIGHT_SHIFT$,
+
+        UP			= (1<< UP_SHIFT),	// %UP%
+        DOWN			= (1<< DOWN_SHIFT),	// %DOWN%
+        LEFT			= (1<< LEFT_SHIFT),	// %LEFT%
+        RIGHT			= (1<< RIGHT_SHIFT),	// %RIGHT%
+
+        DIAGONAL_SHIFT 		= $DIAGONAL_SHIFT$,
+        RIGHT_DOWN_SHIFT	= $RIGHT_DOWN_SHIFT$,
+        DOWN_LEFT_SHIFT		= $DOWN_LEFT_SHIFT$,
+        UP_RIGHT_SHIFT		= $UP_RIGHT_SHIFT$,
+        LEFT_UP_SHIFT		= $LEFT_UP_SHIFT$,
+
+        DOWN_LEFT		= (1 << DOWN_LEFT_SHIFT),	// %DOWN_LEFT%
+        LEFT_UP			= (1 << LEFT_UP_SHIFT),		// %LEFT_UP%
+        UP_RIGHT		= (1 << UP_RIGHT_SHIFT),	// %UP_RIGHT%
+        RIGHT_DOWN		= (1 << RIGHT_DOWN_SHIFT),	// %RIGHT_DOWN%
+
+        ALL_DIRECTIONS	= UP | DOWN | LEFT | RIGHT,		// %ALL_DIRECTIONS%
+
+        BLACK_MASK		= (ALL_DIRECTIONS << BLACK_SHIFT), // %BLACK_MASK%
+        WHITE_MASK		= (ALL_DIRECTIONS << WHITE_SHIFT), // %WHITE_MASK%
+
+        BLACK_DOWN		= (DOWN	      << BLACK_SHIFT),	// %BLACK_DOWN%
+        BLACK_LEFT		= (LEFT	      << BLACK_SHIFT),	// %BLACK_LEFT%
+        BLACK_UP		= (UP	      << BLACK_SHIFT),	// %BLACK_UP%
+        BLACK_RIGHT		= (RIGHT      << BLACK_SHIFT),	// %BLACK_RIGHT%
+
+        BLACK_DOWN_LEFT		= (DOWN_LEFT  << BLACK_SHIFT),// %BLACK_DOWN_LEFT%
+        BLACK_LEFT_UP		= (LEFT_UP    << BLACK_SHIFT),// %BLACK_LEFT_UP%
+        BLACK_UP_RIGHT		= (UP_RIGHT   << BLACK_SHIFT),// %BLACK_UP_RIGHT%
+        BLACK_RIGHT_DOWN	= (RIGHT_DOWN << BLACK_SHIFT),// %BLACK_RIGHT_DOWN%
+
+        WHITE_DOWN		= (DOWN	      << WHITE_SHIFT),	// %WHITE_DOWN%
+        WHITE_LEFT		= (LEFT	      << WHITE_SHIFT),	// %WHITE_LEFT%
+        WHITE_UP		= (UP	      << WHITE_SHIFT),	// %WHITE_UP%
+        WHITE_RIGHT		= (RIGHT      << WHITE_SHIFT),	// %WHITE_RIGHT%
+
+        WHITE_DOWN_LEFT		= (DOWN_LEFT  << WHITE_SHIFT),	// %WHITE_DOWN_LEFT%
+        WHITE_LEFT_UP		= (LEFT_UP    << WHITE_SHIFT),	// %WHITE_LEFT_UP%
+        WHITE_UP_RIGHT		= (UP_RIGHT   << WHITE_SHIFT),	// %WHITE_UP_RIGHT%
+        WHITE_RIGHT_DOWN	= (RIGHT_DOWN << WHITE_SHIFT),	// %WHITE_RIGHT_DOWN%
+
+        EDGE_DOWN		= (BLACK_DOWN  | WHITE_DOWN),	// %EDGE_DOWN%
+        EDGE_LEFT		= (BLACK_LEFT  | WHITE_LEFT),	// %EDGE_LEFT%
+        EDGE_UP			= (BLACK_UP    | WHITE_UP),	// %EDGE_UP%
+        EDGE_RIGHT		= (BLACK_RIGHT | WHITE_RIGHT),	// %EDGE_RIGHT%
+
+        EDGE_DOWN_LEFT		= (BLACK_DOWN_LEFT | WHITE_DOWN_LEFT), // %EDGE_DOWN_LEFT%
+        EDGE_LEFT_UP		= (BLACK_LEFT_UP   | WHITE_LEFT_UP),   // %EDGE_LEFT_UP%
+        EDGE_UP_RIGHT		= (BLACK_UP_RIGHT  | WHITE_UP_RIGHT),  // %EDGE_UP_RIGHT%
+        EDGE_RIGHT_DOWN		= (BLACK_RIGHT_DOWN| WHITE_RIGHT_DOWN),// %EDGE_RIGHT_DOWN%
+
+        ALL_EDGES		= (EDGE_DOWN | EDGE_LEFT | EDGE_UP | EDGE_RIGHT),	// %ALL_EDGES%
+
+        PATTERN_DIRECTION_BITS	= $PATTERN_DIRECTION_BITS$,
+        PATTERN_DIRECTION_MASK	= ((1 << PATTERN_DIRECTION_BITS) -1),	// %PATTERN_DIRECTION_MASK%
+
+        BACKGROUND_CHAR		= '$BACKGROUND_CHAR$',
+        BACKGROUND_CHAR_VISIBLE	= '$BACKGROUND_CHAR_VISIBLE$',
+        EMPTY_CHAR		= '$EMPTY_CHAR$',
+        BLACK_CHAR		= '$BLACK_CHAR$',
+        WHITE_CHAR		= '$WHITE_CHAR$',
+        EDGE_CHAR		= '$EDGE_CHAR$',
+
+        DEBUG_CHECK		= $DEBUG_CHECK$,
+        DEBUG_BOARD		= $DEBUG_BOARD$,
+        DEBUG_DEBUG_BOARD	= $DEBUG_DEBUG_BOARD$,
+        DEBUG_MOVES		= $DEBUG_MOVES$,
+        DEBUG_RAND_STATE	= $DEBUG_RAND_STATE$,
+        DEBUG_COUNT3X3		= $DEBUG_COUNT3X3$,
+        DEBUG_SELF_ATARI	= $DEBUG_SELF_ATARI$,
+
+        FEATURE_CONTIGUOUS	= $FEATURE_CONTIGUOUS$,
+        FEATURE_ATARI_CAPTURE	= $FEATURE_ATARI_CAPTURE$,
+        FEATURE_ATARI_CAPTURE_SELF_ATARI	= $FEATURE_ATARI_CAPTURE_SELF_ATARI$,
+        FEATURE_ATARI_EXTENSION	= $FEATURE_ATARI_EXTENSION$,
+        FEATURE_ATARI_EXTENSION_SELF_ATARI	= $FEATURE_ATARI_EXTENSION_SELF_ATARI$,
+        FEATURE_SOLVE_KO	= $FEATURE_SOLVE_KO$,
+        FEATURE_TWO_LIBERTIES	= $FEATURE_TWO_LIBERTIES$,
+        // Must be last, counts features
+        NR_FEATURES		= $NR_FEATURES$,
+    };
+};
+
+/* I can't convince gcc to emit a rol instruction unless the operands are
+   constants but then I pay the price of a jump */
+inline uint8_t rol8(uint8_t operand, uint8_t offset) HOT FUNCTIONAL;
+inline uint8_t rol8(uint8_t operand, uint8_t offset) {
+#if defined(__x86_64__) || defined(__i386__)
+    uint8_t result;
+    __asm__ ("rolb %2, %0"
+             : "=g" (result)
+             : "0" (operand), "cI" (offset)
+             );
+    return result;
+#else /* x86 */
+    // on a core 2 duo this is about 30% slower than the rol instruction
+    return operand << offset | operand >> (8-offset);
+#endif /* x86 */
+}
+
+inline uint16_t rol16(uint16_t operand, uint8_t offset) HOT FUNCTIONAL;
+inline uint16_t rol16(uint16_t operand, uint8_t offset) {
+#if defined(__x86_64__) || defined(__i386__)
+    uint16_t result;
+    __asm__ ("rolw %2, %0"
+             : "=g" (result)
+             : "0" (operand), "cI" (offset)
+             );
+    return result;
+#else /* x86 */
+    // on a core 2 duo this is about 30% slower than the rol instruction
+    return operand << offset | operand >> (16-offset);
+#endif /* x86 */
+}
+#endif /* constants_hpp */

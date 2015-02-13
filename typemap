@@ -1,0 +1,20 @@
+TYPEMAP
+std::string	T_STD_STRING
+StringSet*	T_PTROBJ_STRINGSET
+CountLiberties*	T_PTROBJ_COUNT_LIBERTIES
+
+INPUT
+T_STD_STRING
+	$var = std::string(SvPV_nolen($arg), SvCUR($arg));
+T_PTROBJ_STRINGSET
+        $var = C_STRINGSET($arg, \"$var\");
+T_PTROBJ_COUNT_LIBERTIES
+        $var = C_COUNT_LIBERTIES($arg, \"$var\");
+
+OUTPUT
+T_STD_STRING
+	sv_setpvn($arg, $var.c_str(), $var.length());
+T_PTROBJ_STRINGSET
+	sv_setref_pv($arg, \"Go::CountLiberties::StringSet\", (void*)&$var);
+T_PTROBJ_COUNT_LIBERTIES
+	sv_setref_pv($arg, \"Go::CountLiberties\", (void*)$var);

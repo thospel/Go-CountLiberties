@@ -1,0 +1,194 @@
+#!/usr/bin/perl -w
+# Author: Ton Hospel
+
+use strict;
+use warnings;
+
+our $VERSION = "1.000";
+
+# If the program runs as /foobar/bin/program, find libraries in /foobar/lib
+BEGIN {
+    # Even on windows FindBin uses / in the reported path
+    use FindBin ();
+    $FindBin::Bin =~
+        ($^O eq "MSWin32" ?
+         qr{^((?:[A-Z]:)?(?:/[a-zA-Z0-9_:.~ -]+)*)/[a-zA-Z0-9_.-]+/*\z} :
+         qr{^((?:/[a-zA-Z0-9_:.-]+)*)/[a-zA-Z0-9_.-]+/*\z}) ||
+         die "Could not parse bin directory '$FindBin::Bin'";
+    # Use untainted version of lib
+    require lib;
+    # Support a simple --blib option for pre-install testing
+    "lib"->import(@ARGV && $ARGV[0] eq "--blib" ? shift && ("$1/blib/lib", "$1/blib/arch"): "$1/lib");
+}
+
+use Errno qw(ENOENT ESTALE);
+use Scalar::Util qw(looks_like_number);
+use FindBin qw($Script);
+use Carp;
+
+# Import a complete file and return the contents as a single string
+sub slurp {
+    my $file = shift;
+    croak "Filename is undefined" if !defined $file;
+    croak "Filename '$file' contains \\x00" if $file =~ s/\x00/\\x00/g;
+    open(my $fh, "<", $file) || croak "Could not open '$file': $!";
+    my $rc = read($fh, my $slurp, -s $fh);
+    croak "File '$file' is still growing" if $rc &&= read($fh, my $more, 1);
+    croak "Error reading from '$file': $!" if !defined $rc;
+    close($fh) || croak "Error while closing '$file': $!";
+    return $slurp;
+}
+
+sub indent {
+    my ($prefix, $string, $from) = @_;
+    $string = $string->($prefix, $from) if ref $string eq "CODE";
+    $prefix =~ s{^(\t+)}{" " x 8 x length $1}e;
+    $string =~ s/^/$prefix/mg;
+    $string =~ s/^[\S\n]+\n/\n/mg;
+    $string =~ s/^  ( *case | *default:)/$1/mg;
+    $string =~ s{^((?: {8})+)}{"\t" x (length($1)/8)}e;
+    $string =~ s/^[^\S\n]+\n/\n/mg;
+    $string =~ s{\n\n\n+}{\n\n}g;
+    return $string;
+}
+
+sub linenum {
+    my $file = shift;
+    my $n = 0;
+
+    $n += tr/\n// for @_;
+    ++$n;
+    return qq(#line $n "$file"\n);
+}
+
+sub replace {
+    my ($file, $replace) = @_;
+    my $out_file = $file;
+    $out_file =~ s/\.in\z//;
+
+    my $content = slurp($file);
+
+    # All keys must be literal
+    for my $key (keys %$replace) {
+        quotemeta($key) eq $key || die "Invalid key '$key'";
+    }
+    my $pat = join("|", keys %$replace);
+    $content =~ s{
+       ^ ([^\S\n]*)
+         (?: // | /\*) [^\S\n]* BEGIN [^\S\n]+ ($pat) [^\S\n]*\n
+       (.*?)
+       ^[^\S\n]* (?:
+           // [^\S\n]* END [^\S\n]+ \2 |
+           END [^\S\n]+ \2 [^\S\n]* \*/)
+        [^\S\n]* \n
+    }{
+        "#line 0\n" .
+            indent($1, "// BEGIN $2\n") .
+            indent($1, $replace->{$2}, $3) .
+            indent($1, "// END   $2\n") .
+            linenum($file, $`, $&);
+    }sexmg;
+    $content =
+        "// Generated from file '$file' by script $Script.\n// Do not edit. Changes here will be lost\n" .
+        qq(#line 1 "$file"\n) .
+        $content;
+    $content =~ s{^#line 0\n}{linenum($out_file, $`, $&)}gem;
+    return $content;
+}
+
+exit if defined $ENV{REVISION_CHECK} && !$ENV{REVISION_CHECK};
+my $parent =
+    defined $ENV{REVISION_CHECK} &&
+    looks_like_number($ENV{REVISION_CHECK}) &&
+    $ENV{REVISION_CHECK} < 0;
+# print STDERR $parent ? "PARENT" : "CURRENT", "\n";
+
+my $data_file = shift || die "No data file";
+
+my $compiled_revision;
+my $fh;
+if (!open($fh, "<", $data_file)) {
+    $! == ENOENT || $! == ESTALE || die "Could not open '$data_file': $!";
+    exit;
+}
+my $match = $parent ?
+    "PARENT_REVISION" :
+    "CURRENT_REVISION";
+while (my $line = <$fh>) {
+    if ($line =~ m{^\s*//\s*BEGIN \Q$match}o) {
+        $line = <$fh>;
+        defined $line || last;
+        ($compiled_revision) = $line =~ m{^\s*"(\w+)"};
+        last;
+    }
+}
+$compiled_revision ||= "unknown";
+chomp $compiled_revision;
+
+$fh = undef;
+open($fh, "-|", "mtn", "automate", $parent ?
+     "get_base_revision_id" : "get_current_revision_id") ||
+    die "Could not fork: $!";
+my $current_revision = do { local $/; <$fh> };
+close($fh);
+die "Unexpected exit code from mtn: $?" if $? && $? != -1;
+$current_revision ||= "unknown";
+chomp $current_revision;
+
+# print STDERR "$compiled_revision vs $current_revision\n";
+exit if $current_revision eq $compiled_revision;
+
+# Ok, things changed. Generate a new revision file
+
+undef $fh;
+open($fh, "-|", "mtn", "automate", "get_base_revision_id") ||
+    die "Could not fork: $!";
+my $parent_revision = do { local $/; <$fh> };
+close($fh);
+die "Unexpected exit code from mtn: $?" if $? && $? != -1;
+$parent_revision = "unknown" if
+    !defined $parent_revision || $parent_revision eq "";
+chomp $parent_revision;
+
+$fh = undef;
+open($fh, "-|", "mtn", "automate", "get_current_revision_id") ||
+    die "Could not fork: $!";
+$current_revision = do { local $/; <$fh> };
+close($fh);
+die "Unexpected exit code from mtn: $?" if $? && $? != -1;
+$current_revision = "unknown" if
+    !defined $current_revision || $current_revision eq "";
+chomp $current_revision;
+
+my $revision_system = "monotone";
+
+my ($sec, $min, $hour, $mday, $mon, $year) = gmtime;
+my $compile_date = sprintf("%04d%02d%02d", $year+1900, $mon+1, $mday);
+my $compile_time = sprintf("%02d%02d%02d", $hour, $min, $sec);
+
+for my $string ($revision_system, $parent_revision, $current_revision,
+    $compile_date, $compile_time) {
+    $string = qq("$string";\n);
+}
+
+my $tmp_file = "$data_file.tmp";
+undef $fh;
+open($fh, ">", $tmp_file) || die "Could not open '$tmp_file': $!";
+eval {
+    print($fh replace(
+        "$data_file.in",
+        {
+            REVISION_SYSTEM		=> $revision_system,
+            PARENT_REVISION		=> $parent_revision,
+            CURRENT_REVISION	=> $current_revision,
+            COMPILE_DATE		=> $compile_date,
+            COMPILE_TIME		=> $compile_time,
+        })) || die "Could not write to '$tmp_file': $!";
+    close($fh) || die "Could not close '$tmp_file': $!";
+    rename($tmp_file, $data_file) ||
+        die "Could not rename '$tmp_file' to '$data_file': $!";
+};
+if ($@) {
+    unlink($tmp_file) || die "Could not unlink '$tmp_file': $! after $@";
+    die $@;
+}
