@@ -44,25 +44,6 @@ class Elapsed {
     Elapsed(int dummy);		// Create timer and immediately start it
     void start();		// start the timer
     void measure();		// later queries will return from this time
-    // wall time in seconds   (truncated to int64_t)
-    int64_t get_wall() const PURE;
-    // user time in seconds   (truncated to int64_t)
-    int64_t get_user() const PURE;
-    // system time in seconds (truncated to int64_t)
-    int64_t get_system() const PURE;
-    // wall time in microseconds
-    int64_t get_wall_micro() const PURE;
-    // user time in microseconds
-    int64_t get_user_micro() const PURE;
-    // system time in microseconds
-    int64_t get_system_micro() const PURE;
-    // wall time in seconds
-    double get_wall_double() const PURE;
-    // user time in seconds
-    double get_user_double() const PURE;
-    // system time in seconds
-    double get_system_double() const PURE;
-
   private:
     class Period {
       public:
@@ -133,30 +114,6 @@ inline void Elapsed::measure() { period_.measure_period(start_); }
 
 inline void Elapsed::start() { start_.measure_period(Period::start_time_); }
 
-inline int64_t Elapsed::get_wall_micro()   const { return period_.wall_; }
-
-inline int64_t Elapsed::get_user_micro()   const { return period_.user_; }
-
-inline int64_t Elapsed::get_system_micro() const { return period_.system_; }
-
-inline int64_t Elapsed::get_wall() const { return period_.wall_ / 1000000; }
-
-inline int64_t Elapsed::get_user() const { return period_.user_ / 1000000; }
-
-inline int64_t Elapsed::get_system() const { return period_.system_ / 1000000; }
-
-inline double Elapsed::get_wall_double() const {
-    return static_cast<double>(period_.wall_) / 1000000.;
-}
-
-inline double Elapsed::get_user_double() const {
-    return static_cast<double>(period_.user_) / 1000000.;
-}
-
-inline double Elapsed::get_system_double() const {
-    return static_cast<double>(period_.system_) / 1000000.;
-}
-
 /* ========================================================================= */
 inline Alloc::Alloc() :
     alloced_{0},
@@ -164,25 +121,5 @@ inline Alloc::Alloc() :
     max_alloced_{0},
     max_allocs_{0}
 {}
-
-inline size_t Alloc::get_alloced()	const { return alloced_; }
-
-inline size_t Alloc::get_allocs()	const { return allocs_; }
-
-inline size_t Alloc::get_max_alloced()	const { return max_alloced_; }
-
-inline size_t Alloc::get_max_allocs()	const { return max_allocs_; }
-
-/* ========================================================================= */
-// Completely unused but a convenient marker in assembly
-#if DEBUG_VOLATILE
-# define CHECK_VOLATILE(x) do { debug_volatile = x; } while (0)
-#else /* DEBUG_VOLATILE */
-# define CHECK_VOLATILE(x) do {} while (0)
-#endif /* DEBUG_VOLATILE */
-
-extern volatile int debug_volatile;
-/* ========================================================================= */
-
 
 #endif /* utils_hpp */

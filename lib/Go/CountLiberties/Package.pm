@@ -8,8 +8,8 @@ use strict;
 use warnings;
 use vars qw($VERSION $SUB_VERSION $release_time %history);
 $VERSION = "1.000";
-$SUB_VERSION = "453";
-$release_time = 1423919363;	## no critic (UselessNoCritic MagicNumbers)
+$SUB_VERSION = "454";
+$release_time = 1423935636;	## no critic (UselessNoCritic MagicNumbers)
 %history = (
   'Changes' => {
     '1.000' => '1.000'
@@ -32,13 +32,10 @@ $release_time = 1423919363;	## no critic (UselessNoCritic MagicNumbers)
   'bin/count_liberties' => {
     '1.000' => '1.000'
   },
-  'bin/gen_constants' => {
-    '1.000' => '1.000'
-  },
   'bin/revision_check' => {
     '1.000' => '1.000'
   },
-  'include/constants.hpp.in' => {
+  'include/constants.hpp' => {
     '1.000' => '1.000'
   },
   'include/ppport.h' => {
