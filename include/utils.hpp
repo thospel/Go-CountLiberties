@@ -3,13 +3,8 @@
 #ifndef utils_hpp
 # define utils_hpp 1
 
-#include <cstring>	// for memcpy
-#include <string>
 #include <iostream>
-#include <vector>
-#include <iterator>
 #include <system_error>
-#include <utility>
 
 #include "constants.hpp"
 
@@ -26,15 +21,15 @@
 /* ========================================================================= */
 class Assertion : public std::logic_error {
   public:
-    explicit Assertion(std::string const& what) COLD;
-    explicit Assertion(std::string const& what, int line, char const* file) COLD;
+    explicit Assertion(std::string const& what);
+    explicit Assertion(std::string const& what, int line, char const* file);
 };
 
 /* ========================================================================= */
 class SystemError : public std::system_error {
   public:
-    explicit SystemError(std::string const& what) COLD;
-    explicit SystemError(std::string const& what, int line, char const* file) COLD;
+    explicit SystemError(std::string const& what);
+    explicit SystemError(std::string const& what, int line, char const* file);
 };
 
 /* ========================================================================= */
@@ -47,7 +42,7 @@ class Elapsed {
   private:
     class Period {
       public:
-        Period(int dummy) COLD;
+        Period(int dummy);
         Period();
 
         int64_t	wall_;
@@ -78,10 +73,6 @@ class Alloc {
 	__attribute__((malloc))
 	__attribute__((alloc_size(3)));
     void _free_aligned(void *ptr, size_t size, int line, char const* file);
-    size_t get_alloced() const COLD PURE;
-    size_t get_allocs() const COLD PURE;
-    size_t get_max_alloced() const COLD PURE;
-    size_t get_max_allocs() const COLD PURE;
 
     enum {
         /*
