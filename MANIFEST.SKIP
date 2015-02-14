@@ -28,7 +28,6 @@
 ^ppm/[\w-]+\.ppd$
 ^ppm/[\w.-]+/[\w-]+-\d+\.\d+\.tar\.gz$
 ^revision\.cpp$
-^Shape\.c$
 ^CountLiberties\.c$
 \.bs$
 \.o$

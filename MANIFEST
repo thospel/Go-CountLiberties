@@ -4,7 +4,6 @@ MANIFEST
 MANIFEST.SKIP
 Makefile.PL
 README
-Shape.xs
 bin/count_liberties
 bin/gen_constants
 bin/revision_check

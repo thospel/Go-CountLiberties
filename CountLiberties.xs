@@ -3182,8 +3182,6 @@ STATIC CountLiberties* c_CountLiberties(pTHX_ SV *object, const char *context) {
     return INT2PTR(CountLiberties*, address);
 }
 
-XS_EXTERNAL(boot_Go__CountLiberties__Shape);
-
 MODULE = Go::CountLiberties		PACKAGE = Go::CountLiberties
 PROTOTYPES: DISABLE
 
@@ -3732,7 +3730,3 @@ compile_time(...)
   PPCODE:
     PERL_UNUSED_VAR(items);
     mPUSHp(compile_time, strlen(compile_time));
-
-BOOT:
-  PUSHMARK(SP);
-  boot_Go__CountLiberties__Shape(aTHX_ cv);

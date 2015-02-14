@@ -28,8 +28,12 @@ $Data::Dumper::Indent = 1;
 $Data::Dumper::Sortkeys = 1;
 
 use Go::CountLiberties;
-use Go::CountLiberties::Constants qw(BLACK WHITE EDGE);
-# use Go::CountLiberties;
+
+use constant {
+    EDGE	=> "*",
+    WHITE	=> "O",
+    EMPTY	=> ".",
+};
 
 my $signatures	= 1;
 my $cost_type	= 0;
@@ -213,6 +217,22 @@ sub lower_bound {
     } else {
         die "Bad call";
     }
+}
+
+sub nr_liberties {
+    my ($shape) = @_;
+    my $nr_liberties = 0;
+    for my $y (1..$#$shape-1) {
+        for my $x (1..$#{$shape->[$y]}) {
+            $shape->[$y][$x] eq EMPTY || next;
+            ++ $nr_liberties if
+                $shape->[$y-1][$x] eq WHITE ||
+                $shape->[$y+1][$x] eq WHITE ||
+                $shape->[$y][$x-1] eq WHITE ||
+                $shape->[$y][$x+1] && $shape->[$y][$x+1] eq WHITE;
+        }
+    }
+    return $nr_liberties;
 }
 
 my $history_bits = Go::CountLiberties->history_bits ||
@@ -484,21 +504,22 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         }
         # print Dumper $filter[0];
 
-        my $shape = Go::CountLiberties::Shape->new;
         $counter->nr_keys == 1 || die "Initial nr_keys should be 1";
         my $old_column;
         # my ($column) = $counter->keys;
         my $reversed = 0;
-        for my $y (-1..$height) {
-            $shape->set(-1, $y, EDGE);
+        my @shape;
+        for my $y (0..$height+1) {
+            $shape[$y][0] = EDGE;
         }
         for my $x (1..$target_width) {
-            $shape->set($x-1, -1, EDGE);
-            $shape->set($x-1, $height, EDGE);
+            $shape[0][$x] = EDGE;
+            $shape[$height+1][$x] = EDGE;
             for my $y (1..$height) {
                 my $y0 = $counter->run_round($x - 1, $y - 1);
                 $y0 = $height-1-$y0 if $reversed;
-                $shape->set($x-1, $y0, WHITE) if $counter->filter($x-1, $y-1) > 0;
+                $shape[$y0+1][$x] = $counter->filter($x-1, $y-1) > 0 ?
+                    WHITE : EMPTY;
                 $reversed = ($reversed xor $counter->reversed);
                 # print "pos=$y0 $column $reversed $counter->filter($x-1, $y-1)\n";
                 # print "[$x, $y] ", Dumper({ $counter->key_values}) if $target_width == 1;
@@ -507,28 +528,18 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                 # ($column) = $counter->keys;
             }
             if ($x != $target_width && !$counter->no_solution && $counter->maximum == $max[$x-1] && $best_filter[$x-1]) {
-                my $s = $shape->clone;
-                for my $y (-1..$height) {
-                    $s->set($x, $y, EDGE);
-                }
-                my $liberties = $s->liberties(WHITE);
-                my $nr_liberties = $liberties->keys;
+                my $nr_liberties = nr_liberties(\@shape);
                 print "Extra solution ${x}x$height: $nr_liberties liberties\n";
-                print $s->as_string;
+                print @$_, EDGE, "\n" for @shape;
                 $max[$x-1] == $nr_liberties ||
                     die "Expected $max[$x-1] liberties, got $nr_liberties";
-                # print $liberties->as_string;
                 delete $best_filter[$x-1];
             }
         }
         die "At target column $target_width in post processing but lost the solution" if
             $counter->no_solution;
 
-        for my $y (-1..$height) {
-            $shape->set($target_width, $y, EDGE);
-        }
-        my $liberties = $shape->liberties(WHITE);
-        my $nr_liberties = $liberties->keys;
+        my $nr_liberties = nr_liberties(\@shape);
 
         delete $best_filter[$target_width-1];
         $counter->clear;
@@ -539,10 +550,9 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         printf("Solution %dx%d: %d liberties (%d * %.1fs user, %.1fs real)\n",
                $target_width, $height, $nr_liberties,
                $nr_threads, $solution_user_period/$nr_threads, $solution_period);
-        print $shape->as_string;
+        print @$_, EDGE, "\n" for @shape;
         $max[$target_width-1] == $nr_liberties ||
             die "Expected $max[$target_width-1] liberties, got $nr_liberties";
-        # print $liberties->as_string;
     }
     if ($solution) {
         my $total_period      = time  - $total_start;

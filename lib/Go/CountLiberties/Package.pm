@@ -8,8 +8,8 @@ use strict;
 use warnings;
 use vars qw($VERSION $SUB_VERSION $release_time %history);
 $VERSION = "1.000";
-$SUB_VERSION = "451";
-$release_time = 1423916259;	## no critic (UselessNoCritic MagicNumbers)
+$SUB_VERSION = "453";
+$release_time = 1423919363;	## no critic (UselessNoCritic MagicNumbers)
 %history = (
   'Changes' => {
     '1.000' => '1.000'
@@ -27,9 +27,6 @@ $release_time = 1423916259;	## no critic (UselessNoCritic MagicNumbers)
     '1.000' => '1.000'
   },
   'README' => {
-    '1.000' => '1.000'
-  },
-  'Shape.xs' => {
     '1.000' => '1.000'
   },
   'bin/count_liberties' => {

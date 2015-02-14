@@ -37,7 +37,6 @@
 ^MYMETA\.json$
 /MYMETA\.yml$
 /MYMETA\.json$
-^Shape\.c$
 ^CountLiberties\.c$
 ^revision\.cpp$
 ^tables\.cpp$
