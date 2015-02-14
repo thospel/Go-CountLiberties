@@ -205,12 +205,17 @@ class CountLiberties {
         void column(uint64_t column) {
             value_ = (value_ & ~column_mask64) | column << shift64;
         }
+        static auto __fast_hash(uint64_t column, uint shift = shift64) -> uint64_t {
+            return column * lcm_multiplier >> shift;
+        }
+        static auto _fast_hash(uint64_t column, uint shift = shift64) -> uint64_t {
+            return __fast_hash(column >> shift64, shift);
+        }
         auto fast_hash(uint shift = shift64) const -> uint64_t {
-            // return hash();
             // return murmur_mix(column());
             // return column();	// Very bad collisions
             // Terrible hash, but seems to perform really well for our case
-            return column() * lcm_multiplier >> shift;
+            return _fast_hash(_column(), shift);
         }
         auto murmur(uint64_t seed = murmur_seed) const {
             // Derived from the glibc variant of a 64-bit Murmur hash
@@ -257,8 +262,10 @@ class CountLiberties {
         void clear(Liberties liberties = 0) {
             value_ = liberties;
         }
-        auto nr_empty(uint index) const -> uint;
-        auto nr_empty(CompressedColumn backbone) const -> uint;
+        auto nr_empty(uint64_t index_mask, CompressedColumn mask) const -> uint;
+        auto nr_empty(CompressedColumn backbone, CompressedColumn mask) const -> uint {
+            return nr_empty(backbone._column(), mask);
+        }
         bool multichain(uint64_t mask) const;
         bool multichain(int from, int height) const;
         void expand(Column& column, int from, int height) const;
@@ -403,7 +410,7 @@ class CountLiberties {
                 index >>= 1;
                 add <<= BITS_PER_VERTEX;
             }
-            return mask + MAX_LIBERTIES;
+            return mask;
         }
         static Entry invalid(uint64_t base = BLACK_UP) {
             Entry temp;
@@ -640,6 +647,44 @@ class CountLiberties {
                 ++add2;
             }
         }
+        bool insert(Entry entry, value_type*& where, uint64_t mask) {
+            assert(entry._column() != UNSET);
+            assert(entry._column() != TERMINATOR);
+            // if (size_ >= used_ * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used_));
+            // if (used_ <= 2) fatal("Insert while not enough reserved");
+            uint64_t column = entry._column() & mask;
+            size_type pos = Entry::_fast_hash(column, shift_);
+            if (arena_[pos].unset()) {
+                arena_[pos].entry = entry;
+                // std::cout << "Insert " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try 1)\n";
+                // std::cout << "Insert at DIB 1\n";
+                ++size_;
+                where = &arena_[pos];
+                return false;
+            }
+            // Quadratic probing
+            size_type add  = 1;
+            size_type add2 = 2;
+            while (true) {
+                if ((arena_[pos].entry._column() & mask) == column) {
+                    // std::cout << "Clash " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try " << add2-1 << ") versus " << entry._column() << "\n";
+                    // std::cout << "Clash at DIB " << add2-1 << "\n";
+                    where = &arena_[pos];
+                    return true;
+                }
+                pos = (pos + add) & mask_;
+                if (arena_[pos].unset()) {
+                    arena_[pos].entry = entry;
+                    // std::cout << "Insert " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try " << add2 << ")\n";
+                    // std::cout << "Insert at DIB " << add2 << "\n";
+                    ++size_;
+                    where = &arena_[pos];
+                    return false;
+                }
+                add += add2;
+                ++add2;
+            }
+        }
         // Normally find returns an iterator to the position or end()
         // Instead we return a direct pointer to the position or nullptr
         value_type* find(Entry entry) {
@@ -656,6 +701,34 @@ class CountLiberties {
             size_type add2 = 2;
             while (true) {
                 if (arena_[pos].entry.column() == column) {
+                    // std::cout << "Found at DIB " << add2-1 << "\n";
+                    return &arena_[pos];
+                }
+                pos = (pos + add) & mask_;
+                // std::cout << "Retry pos " << pos << "\n";
+                if (arena_[pos].unset()) {
+                    // std::cout << "Not found at DIB " << add2 << "\n";
+                    return nullptr;
+                }
+                add += add2;
+                ++add2;
+                // if (add2 > 10) fatal("Too much looping");
+            }
+        }
+        value_type* find(Entry entry, uint64_t mask) {
+            // dump();
+            uint64_t column = entry._column() & mask;
+            size_type pos = Entry::_fast_hash(column, shift_);
+            // std::cout << "Try pos " << pos << "\n";
+            if (arena_[pos].unset()) {
+                // std::cout << "Not found at DIB 1\n";
+                return nullptr;
+            }
+            // Quadratic probing
+            size_type add  = 1;
+            size_type add2 = 2;
+            while (true) {
+                if ((arena_[pos].entry._column() & mask) == column) {
                     // std::cout << "Found at DIB " << add2-1 << "\n";
                     return &arena_[pos];
                 }
@@ -1279,44 +1352,19 @@ uint const CountLiberties::CompressedColumn::empty_mask_table_[256] = {
     E6(8),
 };
 
-auto CountLiberties::CompressedColumn::nr_empty(uint index) const -> uint {
-    if (0) {
-        index = ~index;
-        auto value = column();
-        uint nr_empty = 0;
-        for (uint i=0; i<length(); ++i) {
-            nr_empty += popcount_table_[empty_mask_table_[value & 0xff] & index];
-            index  >>= 4;
-            value  >>= 8;
-        }
-        return nr_empty;
-    } else if (1) {
-        index = ~index;
-        auto value = column();
-        uint mask = 0;
-        uint shift= 8 * length();
-        while (shift) {
-            shift -= 8;
-            mask = mask * 16 + empty_mask_table_[value >> shift & 0xff];
-        }
-        return popcount32(mask & index);
-    } else {
-        return half_popcount64((_column() & ~index) >> shift64);
-    }
-}
-
-auto CountLiberties::CompressedColumn::nr_empty(CompressedColumn backbone) const -> uint {
+auto CountLiberties::CompressedColumn::nr_empty(uint64_t index_mask, CompressedColumn mask) const -> uint {
+    index_mask |= mask._column();
 #ifdef __POPCNT__
-        auto value = (_column() & ~backbone._column()) >> shift64;
-        return half_popcount64(value);
+    auto value = (_column() & ~index_mask) >> shift64;
+    return half_popcount64(value);
 #else  /* __POPCNT__ */
-        auto value = _column() & ~backbone._column();
-        value &= UINT64_C(0x5555555555555555) << shift64;
-        // Special implementation of popcount32 for our use case
-        uint32_t v = value + (value >> 32);
-        v  = (v & 0x33333333) + ((v >> 2) & 0x33333333);
-        v  = (v + (v >> 4)) & 0xF0F0F0F;
-        return v * 0x1010101 >> 24;
+    auto value = _column() & ~index_mask;
+    value &= UINT64_C(0x5555555555555555) << shift64;
+    // Special implementation of popcount32 for our use case
+    uint32_t v = value + (value >> 32);
+    v  = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+    v  = (v + (v >> 4)) & 0xF0F0F0F;
+    return v * 0x1010101 >> 24;
 #endif  /* __POPCNT__ */
 }
 
@@ -1893,7 +1941,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
     }
 
     auto& backbone_set	= thread_data.backbone_set;
-    uint64_t mask	= index_masks_[index];
+    uint64_t index_mask	= index_masks_[index];
 
     entries.clear();
     entries.reserve(map.size());
@@ -1912,16 +1960,20 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                 probe.set_liberty(up_mask);	// Set LIBERTY
                 auto found = map.find(probe);
                 if (found)
-                    if (liberties < found->entry.liberties())
+                    if (liberties < found->entry.liberties()) {
+                        // std::cout << "up 1 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
                         continue;
+                    }
             } else {
                 // LIBERTY
                 Entry probe{entry};
                 probe.set_empty(up_mask);	// Set EMPTY
                 auto found = map.find(probe);
                 if (found)
-                    if (liberties <= found->entry.liberties())
+                    if (liberties <= found->entry.liberties()) {
+                        // std::cout << "up 2 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
                         continue;
+                    }
             }
         }
         if (down) {
@@ -1931,32 +1983,33 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                 probe.set_liberty(down_mask);	// Set LIBERTY
                 auto found = map.find(probe);
                 if (found)
-                    if (liberties < found->entry.liberties()) continue;
+                    if (liberties < found->entry.liberties()) {
+                        // std::cout << "down 1 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
+                        continue;
+                    }
             } else {
                 // LIBERTY
                 Entry probe{entry};
                 probe.set_empty(down_mask);	// Set EMPTY
                 auto found = map.find(probe);
                 if (found)
-                    if (liberties <= found->entry.liberties()) continue;
+                    if (liberties <= found->entry.liberties()) {
+                        // std::cout << "down 2 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
+                        continue;
+                    }
             }
         }
 
-        Entry backbone{entry.backbone(mask)};
-        if (0)
-            std::cout <<
-                "I Entry: "     << column_string(entry,    index) <<
-                ", Bacbone: " << column_string(backbone, index) <<
-                " (raw liberties=" << backbone.liberties() << ")\n";
+        //if (0)
+        //    std::cout <<
+        //        "I Entry: "     << column_string(entry,    index) <<
+        //        ", Bacbone: " << column_string(backbone, index) <<
+        //        " (raw liberties=" << backbone.liberties() << ")\n";
         EntrySet::value_type* result;
-        if (backbone_set.insert(backbone, result)) {
-            // Already existed
-            int64_t gain = liberties - result->entry.liberties();
-            if (gain > 0)
-                // Effectively set found liberties to entry.liberties()
-                // However using the add makes sure the internals of Entry
-                // don't have to do any bit fiddling
-                result->entry.liberties_add(gain);
+
+        if (backbone_set.insert(entry, result, index_mask)) {
+            if (liberties > result->entry.liberties())
+                result->entry = entry;
         }
 
         entries.emplace_back(entry);
@@ -1976,7 +2029,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
             if (liberties > new_max) {
                 if (liberties > thread_data.real_max)
                     thread_data.real_max = liberties;
-                // if (!multichain(entry, mask)) {
+                // if (!multichain(entry, index_mask)) {
                 if (!multichain(entry, index)) {
                     // If we get here there are NOT two or more different chains
                     // So no chains or 1 connected chain
@@ -2000,23 +2053,24 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
         size_t nr_entries = 0;
         for (auto const entry: entries) {
             uint64_t liberties{entry.liberties()};
-            Entry backbone{entry.backbone(mask)};
-            if (0)
-                std::cout <<
-                    "O Entry: "     << column_string(entry,    index) <<
-                    ", Bacbone: " << column_string(backbone, index) <<
-                    " (raw liberties=" << backbone.liberties() << ")\n";
+            //if (0)
+            //    std::cout <<
+            //        "O Entry: "     << column_string(entry,    index) <<
+            //        ", Bacbone: " << column_string(backbone, index) <<
+            //        " (raw liberties=" << backbone.liberties() << ")\n";
 
-            auto found = backbone_set.find(backbone);
+            auto found = backbone_set.find(entry, index_mask);
             if (!found) fatal("Did not find entry backbone");
             uint64_t max_liberties = found->entry.liberties();
             if (liberties < max_liberties) {
-                uint64_t nr_empty = entry.nr_empty(backbone);
+                uint64_t nr_empty = entry.nr_empty(index_mask, found->entry);
                 // std::cout << "nr_empty=" << nr_empty << "\n";
                 // if (liberties + nr_empty <= max_liberties) continue;
                 if (liberties + nr_empty <= max_liberties) {
-                    if (liberties + nr_empty < max_liberties || nr_empty)
+                    if (liberties + nr_empty < max_liberties || nr_empty) {
+                        // std::cout << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << max_liberties << " nr_empty=" << nr_empty << std::endl;
                         continue;
+                    }
                 }
             }
 
@@ -2025,7 +2079,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
             if (liberties > new_max) {
                 if (liberties > thread_data.real_max)
                     thread_data.real_max = liberties;
-                // if (!multichain(entry, mask)) {
+                // if (!multichain(entry, index_mask)) {
                 if (!multichain(entry, index)) {
                     // If we get here there are NOT two or more different chains
                     // So no chains or 1 connected chain
