@@ -69,7 +69,7 @@ WriteMakefile
      LIBS		=> [''],
      INC		=> '-I include',
      depend		=> {
-         '$(O_FILES)'	=> "include/ppport.h include/utils.hpp include/constants.hpp include/vector.hpp",
+         '$(O_FILES)'	=> "include/ppport.h include/constants.hpp include/vector.hpp",
      },
      DEFINE		=> $debug ? "-DDEBUG=1" : "-DNDEBUG=1",
      OBJECT		=> '$(O_FILES)',
@@ -179,10 +179,6 @@ $(XS_FILES): include/ppport.h
 EOF
 
     $postamble{board} = <<'EOF';
-include/constants.hpp: include/constants.hpp.in bin/gen_constants blib/lib/Go/CountLiberties/Constants.pm
-	$(FULLPERLRUN) bin/gen_constants --blib include/constants.hpp
-	$(CHMOD) 0444 include/constants.hpp
-
 .cpp.s:
 	$(CCCMD) -S -fverbose-asm $(CCCDLFLAGS) "-I$(PERL_INC)" $(PASTHRU_DEFINE) $(DEFINE) $*.cpp
 

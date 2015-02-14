@@ -15,7 +15,7 @@ VERSION	d6e813db4ce411e8be44306ffac7a3a7 1.000 README
 VERSION	d75676a6286324887b69dc05236ce636 1.000 bin/count_liberties
 VERSION	05045f4bfae44ab6dfb9c47414825ca5 1.000 bin/gen_constants
 VERSION	25a1e6d4cff8e446408c65686c033ebd 1.000 bin/revision_check
-VERSION	bf8a56916bb1d1b0ca1b8b36462e0106 1.000 include/constants.hpp.in
+VERSION	bf8a56916bb1d1b0ca1b8b36462e0106 1.000 include/constants.hpp
 VERSION	1318d3c11c92003751aa260d566daf53 1.000 include/ppport.h
 VERSION	f69fb388367a71108c312536513fa74b 1.000 include/utils.hpp
 VERSION	409f74a16080de4d67cab2cc37500291 1.000 include/vector.hpp
@@ -39,7 +39,7 @@ RELEASED 1.000 1.000 README
 RELEASED 1.000 1.000 bin/count_liberties
 RELEASED 1.000 1.000 bin/gen_constants
 RELEASED 1.000 1.000 bin/revision_check
-RELEASED 1.000 1.000 include/constants.hpp.in
+RELEASED 1.000 1.000 include/constants.hpp
 RELEASED 1.000 1.000 include/ppport.h
 RELEASED 1.000 1.000 include/utils.hpp
 RELEASED 1.000 1.000 include/vector.hpp

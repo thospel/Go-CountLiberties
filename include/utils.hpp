@@ -13,24 +13,7 @@
 
 #include "constants.hpp"
 
-class Chain;
-class Mover;
-class Color;
-class VertexId;
-class Vertex;
-class EmptyVertex;
-class ColoredVertex;
-class VertexSelector;
-class BoardEmptySet;
-class BoardMemory;
-class Board;
-class Move;
-class Game;
-class Position;
-class Tree;
-
 /* ========================================================================= */
-#define DEBUG_WHERE()	do { std::cerr << "File " << __FILE__ << " line " << __LINE__ << "\n"; } while (false)
 #define ASSERTION(x)	throw Assertion((x),   __LINE__, __FILE__)
 #define SYS_ERROR(x)	throw SystemError((x), __LINE__, __FILE__)
 
@@ -39,21 +22,6 @@ class Tree;
 #define ALLOC_CACHE_ALIGNED(size)	_alloc_aligned(CACHE_LINE, size, __LINE__, __FILE__)
 #define ALLOC_VECTOR_ALIGNED(size)	_alloc_aligned(VECTOR_ALIGNMENT, size, __LINE__, __FILE__)
 #define FREE_ALIGNED(ptr, size)	_free_aligned(ptr, size, __LINE__, __FILE__)
-
-/* ========================================================================= */
-// A group can have a size up to board area (-1)
-typedef uint16_t	Stones;
-typedef uint16_t	BranchNr;
-// All stones can become prisoners, but they can be for either party, so signed
-typedef int16_t		Prisoners;
-// A chain can have at most 241 liberties on a 19x19 board,
-// so we can use uint8_t
-// However for alive caching we need to be able to overestimate liberties
-// by a lot and currently we would overflow on uint8_t, so use uint16_t instead
-typedef uint16_t	Liberties;
-typedef int16_t		MoveNr;
-typedef uint64_t	Zobrist;
-typedef float		Gamma;
 
 /* ========================================================================= */
 class Assertion : public std::logic_error {
