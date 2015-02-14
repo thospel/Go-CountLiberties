@@ -405,16 +405,6 @@ class CountLiberties {
             }
             return mask + MAX_LIBERTIES;
         }
-        static Entry bigbone_mask(uint64_t mask, int log2) {
-            mask -= MAX_LIBERTIES;
-            // Remove last bit
-            mask &= mask - 1;
-            // Remove first bit
-            mask &= ~(2 << (log2*2+shift64));
-            Entry result;
-            result._column(mask);
-            return result;
-        }
         static Entry invalid(uint64_t base = BLACK_UP) {
             Entry temp;
             temp._column(base << shift64);
@@ -1059,12 +1049,6 @@ class CountLiberties {
     std::string to_string(Column const& column);
     char column_string(char* result, CompressedColumn const& compressed, int from);
     std::string column_string(CompressedColumn const& compressed, int from);
-    std::string column_string(uint64_t compressed, int from) {
-        Entry entry;
-        entry.clear();
-        entry.add_direction(compressed);
-        return column_string(entry, from);
-    }
 
     void new_round() HOT;
     int run_round(int x, int y) HOT;
@@ -1113,7 +1097,6 @@ class CountLiberties {
     std::vector<EntryVector> entries_;
     std::vector<int> reverse_bits_;
     std::vector<uint64_t> index_masks_;
-    std::vector<Entry> bigbone_masks_;
     EntryVector entry00_;
 
     // Stuff not accessed from within a thread or constant
@@ -2014,32 +1997,10 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                     liberties << ")\n";
         }
     } else {
-        uint64_t big_liberties = 0;
-        auto found = backbone_set.find(bigbone_masks_[index]);
-        if (found) {
-            big_liberties = found->entry.liberties();
-            // std::cout << "Bigbone " << column_string(found->entry, index) << ", raw_liberties=" << big_liberties << "\n";
-
-        } else {
-            // printf("No bigbone for index %x\n", index);
-        }
-
         size_t nr_entries = 0;
         for (auto const entry: entries) {
             uint64_t liberties{entry.liberties()};
             Entry backbone{entry.backbone(mask)};
-
-            if (liberties < big_liberties) {
-                uint64_t nr_empty = entry.nr_empty(backbone);
-                // std::cout << "nr_empty=" << nr_empty << "\n";
-                if (liberties + nr_empty <= big_liberties) {
-                    if (liberties + nr_empty < big_liberties || nr_empty) {
-                        // std::cout << "Prune " << column_string(entry, index) << " (raw_liberties=" << liberties << ")\n";
-                        continue;
-                    }
-                }
-            }
-
             if (0)
                 std::cout <<
                     "O Entry: "     << column_string(entry,    index) <<
@@ -2052,6 +2013,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
             if (liberties < max_liberties) {
                 uint64_t nr_empty = entry.nr_empty(backbone);
                 // std::cout << "nr_empty=" << nr_empty << "\n";
+                // if (liberties + nr_empty <= max_liberties) continue;
                 if (liberties + nr_empty <= max_liberties) {
                     if (liberties + nr_empty < max_liberties || nr_empty)
                         continue;
@@ -3045,23 +3007,15 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
 
     reverse_bits_.resize(nr_classes());
     index_masks_.resize(nr_classes());
-    bigbone_masks_.resize(nr_classes());
-    int log2 = -1;
-    int log2mask = 0;
-    for (int index = 0; index < nr_classes(); ++index) {
-        if (index > log2mask) {
-            ++log2;
-            log2mask = log2mask*2+1;
-        }
-        int bits = index;
+    for (int i = 0; i < nr_classes(); ++i) {
+        int bits = i;
         int reverse = 0;
         for (int j=0; j<height_;++j) {
             reverse = 2 * reverse + (bits & 1);
             bits /= 2;
         }
-        reverse_bits_[index] = reverse;
-        index_masks_[index]   = Entry::backbone_mask(index);
-        bigbone_masks_[index] = Entry::bigbone_mask(index_masks_[index], log2);
+        reverse_bits_[i] = reverse;
+        index_masks_[i]  = Entry::backbone_mask(i);
     }
     target_width(height_);
 
