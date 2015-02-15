@@ -325,6 +325,8 @@ class CountLiberties {
 
         friend bool equal(CompressedColumn const& lhs, CompressedColumn const& rhs);
         friend bool _equal(CompressedColumn const& lhs, CompressedColumn const& rhs);
+        friend bool less(CompressedColumn const& lhs, CompressedColumn const& rhs);
+        friend bool _less(CompressedColumn const& lhs, CompressedColumn const& rhs);
       protected:
         static uint const top_bit = 1 << (sizeof(uint)*8-1);
         static uint const shift64 = 8*(sizeof(uint64_t) - COMPRESSED_SIZE);
@@ -1526,6 +1528,16 @@ bool _equal(CountLiberties::CompressedColumn const& lhs, CountLiberties::Compres
     return lhs._column() == rhs._column();
 }
 
+ALWAYS_INLINE
+bool less(CountLiberties::CompressedColumn const& lhs, CountLiberties::CompressedColumn const& rhs) {
+    return lhs.column() < rhs.column();
+}
+
+ALWAYS_INLINE
+bool _less(CountLiberties::CompressedColumn const& lhs, CountLiberties::CompressedColumn const& rhs) {
+    return lhs._column() < rhs._column();
+}
+
 /* ========================================================================= */
 std::string CountLiberties::Entry::history_bitstring() const {
     std::stringstream ss;
@@ -2042,6 +2054,14 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                 auto old_empty = result->entry.nr_empty(index_mask);
                 if (new_empty > old_empty)
                     result->entry = entry;
+                else if (new_empty == old_empty) {
+                    // This shouldn't really matter too much But we want:
+                    // - more canonical result not depending on hash order
+                    // - very slight reduction of the probability of a reverse
+                    // - possible better bit sharing with smaller boards
+                    if (_less(entry, result->entry))
+                        result->entry = entry;
+                }
             }
         }
 
@@ -3113,26 +3133,8 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     maps_.resize(nr_classes());
     sizes_  .resize(nr_classes());
     indices_.resize(nr_classes());
-    // indices0 size needed
-    //  1:     3
-    //  2:     7
-    //  3:     8
-    //  4:    14
-    //  5:    16
-    //  6:    37
-    //  7:    43
-    //  8:    97
-    //  9:   107
-    // 10:   277
-    // 11:   357
-    // 12:   851
-    // 13:  1060
-    // 14:  2726
-    // 15:  3480
-    // 16:  8998
-    // 17: 11569
-    // 18: 30502
-    // 19: 38662
+    // 100 is an arbitrary starting point to the exponential resizes
+    // Avoid the need of many small initial steps before serious progress
     indices0_.resize(100);
     clear();
 

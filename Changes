@@ -1,5 +1,5 @@
 Revision history for Perl extension Go::Goth.
 
-1.000	2015-02-15 11:37:22 UT
+1.000	2015-02-15 21:16:09 UT
 	- original version; created by h2xs 1.23 with options
 		-v 1.000 -b 5.8.1 -An Go::Goth
