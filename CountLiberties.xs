@@ -143,8 +143,8 @@ class CountLiberties {
 
         // MAX_SIZE can be increased up to 24, but 21 or above leave only
         // 8 HISTORY_BITS, so finding an actual solution will be slow
-        // MAX_SIZE	= constants::MAX_SIZE_Y,		// 19
-        MAX_SIZE	= 24,		// 24
+        MAX_SIZE	= constants::MAX_SIZE_Y,		// 19
+        // MAX_SIZE	= 24,		// 24
         MAX_BITS	= MAX_SIZE*BITS_PER_VERTEX,		// 38
         COMPRESSED_SIZE	= (MAX_BITS+7)/8,			//  5
         EXPANDED_SIZE   = COMPRESSED_SIZE*8/BITS_PER_VERTEX,	// 20
