@@ -143,8 +143,8 @@ class CountLiberties {
 
         // MAX_SIZE can be increased up to 24, but 21 or above leave only
         // 8 HISTORY_BITS, so finding an actual solution will be slow
-        MAX_SIZE	= constants::MAX_SIZE_Y,		// 19
-        // MAX_SIZE	= 24,		// 24
+        MAX_SIZE	= 19,					// 19
+        // MAX_SIZE	= 24,					// 24
         MAX_BITS	= MAX_SIZE*BITS_PER_VERTEX,		// 38
         COMPRESSED_SIZE	= (MAX_BITS+7)/8,			//  5
         EXPANDED_SIZE   = COMPRESSED_SIZE*8/BITS_PER_VERTEX,	// 20
@@ -2038,7 +2038,9 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
             if (liberties > result->entry.liberties())
                 result->entry = entry;
             else if (liberties == result->entry.liberties()) {
-                if (entry.nr_empty(index_mask) > result->entry.nr_empty(index_mask))
+                auto new_empty = entry.nr_empty(index_mask);
+                auto old_empty = result->entry.nr_empty(index_mask);
+                if (new_empty > old_empty)
                     result->entry = entry;
             }
         }
