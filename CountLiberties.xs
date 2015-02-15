@@ -262,8 +262,14 @@ class CountLiberties {
         void clear(Liberties liberties = 0) {
             value_ = liberties;
         }
-        auto any_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> bool;
-        auto nr_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> uint;
+        auto any_empty(uint64_t index_mask, uint64_t mask = 0, uint shift = shift64) const -> bool;
+        auto any_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> bool {
+            return any_empty(index_mask, mask._column(), shift);
+        }
+        auto nr_empty(uint64_t index_mask, uint64_t mask = 0, uint shift = shift64) const -> uint;
+        auto nr_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> uint {
+            return nr_empty(index_mask, mask._column(), shift);
+        }
         auto nr_empty(CompressedColumn backbone, CompressedColumn mask, uint shift = shift64) const -> uint {
             return nr_empty(backbone._column(), mask, shift);
         }
@@ -1356,15 +1362,15 @@ uint const CountLiberties::CompressedColumn::empty_mask_table_[256] = {
 };
 
 ALWAYS_INLINE
-auto CountLiberties::CompressedColumn::any_empty(uint64_t index_mask, CompressedColumn mask, uint shift) const -> bool {
-    index_mask |= mask._column();
+auto CountLiberties::CompressedColumn::any_empty(uint64_t index_mask, uint64_t mask, uint shift) const -> bool {
+    index_mask |= mask;
     auto value = (_column() & ~index_mask) >> shift;
     return value != 0;
 }
 
 ALWAYS_INLINE
-auto CountLiberties::CompressedColumn::nr_empty(uint64_t index_mask, CompressedColumn mask, uint shift) const -> uint {
-    index_mask |= mask._column();
+auto CountLiberties::CompressedColumn::nr_empty(uint64_t index_mask, uint64_t mask, uint shift) const -> uint {
+    index_mask |= mask;
 #ifdef __POPCNT__
     auto value = (_column() & ~index_mask) >> shift;
     return half_popcount64(value);
@@ -2031,6 +2037,10 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
         if (backbone_set.insert(entry, result, index_mask)) {
             if (liberties > result->entry.liberties())
                 result->entry = entry;
+            else if (liberties == result->entry.liberties()) {
+                if (entry.nr_empty(index_mask) > result->entry.nr_empty(index_mask))
+                    result->entry = entry;
+            }
         }
 
         entries.emplace_back(entry);
