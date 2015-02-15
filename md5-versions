@@ -1,13 +1,13 @@
-# Generated on 2015-02-14 23:20:30 UT using /usr/local/bin/release_pm
+# Generated on 2015-02-15 00:17:01 UT using /usr/local/bin/release_pm
 BEGIN
 SEMANTICS	1.013
 DIGITS		3
 RELEASE		1.000
-SUB_RELEASE	455
-DATE		2015-02-14 23:20:30
+SUB_RELEASE	456
+DATE		2015-02-15 00:17:01
 VCS_CHECK	1
-VERSION	298595710bc37ce4dc7e54af7f5acd37 1.000 Changes
-VERSION	83ad5029222775d145614492141ab741 1.000 CountLiberties.xs
+VERSION	9c362a58aa6c4d85034e567b48aabb1b 1.000 Changes
+VERSION	ac288f2be5af75518f392c43ec0a0167 1.000 CountLiberties.xs
 VERSION	cdcda89bf45167d3cf3a90bc189fba71 1.000 MANIFEST
 VERSION	5087e22d6a9dc691ba8192194e28e8fc 1.000 MANIFEST.SKIP
 VERSION	389a5a44f1f42fa3179034d1bd6dc452 1.000 Makefile.PL
@@ -18,7 +18,7 @@ VERSION	c6b4cb92ec359e0b62d6a998eafcb3db 1.000 include/constants.hpp
 VERSION	1318d3c11c92003751aa260d566daf53 1.000 include/ppport.h
 VERSION	409f74a16080de4d67cab2cc37500291 1.000 include/vector.hpp
 VERSION	00a6b21c81f179eb94ea3299f735db59 1.000 lib/Go/CountLiberties/Constants.pm
-VERSION	c0f282d43139f40dd7d399fc14505200 1.000 lib/Go/CountLiberties/Package.pm
+VERSION	eb5eaf199fdb10c0234b8aac7dc575ad 1.000 lib/Go/CountLiberties/Package.pm
 VERSION	f3cce0118af29ac0d742bd099036a6ab 1.000 lib/Go/CountLiberties.pm
 VERSION	a346d0f2071fda58b9e26ebbc96d54a0 1.000 liberties.txt
 VERSION	4e90ec7c3fbe8195148848ddbf62ffc8 1.000 revision.cpp.in
