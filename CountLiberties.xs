@@ -262,9 +262,10 @@ class CountLiberties {
         void clear(Liberties liberties = 0) {
             value_ = liberties;
         }
-        auto nr_empty(uint64_t index_mask, CompressedColumn mask) const -> uint;
-        auto nr_empty(CompressedColumn backbone, CompressedColumn mask) const -> uint {
-            return nr_empty(backbone._column(), mask);
+        auto any_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> bool;
+        auto nr_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> uint;
+        auto nr_empty(CompressedColumn backbone, CompressedColumn mask, uint shift = shift64) const -> uint {
+            return nr_empty(backbone._column(), mask, shift);
         }
         bool multichain(uint64_t mask) const;
         bool multichain(int from, int height) const;
@@ -316,6 +317,8 @@ class CountLiberties {
         // Go to the bottom of the current group and make it point down
         void _join_down(uint64_t stone_mask, uint64_t value);
 
+        friend bool equal(CompressedColumn const& lhs, CompressedColumn const& rhs);
+        friend bool _equal(CompressedColumn const& lhs, CompressedColumn const& rhs);
       protected:
         static uint const top_bit = 1 << (sizeof(uint)*8-1);
         static uint const shift64 = 8*(sizeof(uint64_t) - COMPRESSED_SIZE);
@@ -1352,14 +1355,22 @@ uint const CountLiberties::CompressedColumn::empty_mask_table_[256] = {
     E6(8),
 };
 
-auto CountLiberties::CompressedColumn::nr_empty(uint64_t index_mask, CompressedColumn mask) const -> uint {
+ALWAYS_INLINE
+auto CountLiberties::CompressedColumn::any_empty(uint64_t index_mask, CompressedColumn mask, uint shift) const -> bool {
+    index_mask |= mask._column();
+    auto value = (_column() & ~index_mask) >> shift;
+    return value != 0;
+}
+
+ALWAYS_INLINE
+auto CountLiberties::CompressedColumn::nr_empty(uint64_t index_mask, CompressedColumn mask, uint shift) const -> uint {
     index_mask |= mask._column();
 #ifdef __POPCNT__
-    auto value = (_column() & ~index_mask) >> shift64;
+    auto value = (_column() & ~index_mask) >> shift;
     return half_popcount64(value);
 #else  /* __POPCNT__ */
     auto value = _column() & ~index_mask;
-    value &= UINT64_C(0x5555555555555555) << shift64;
+    value &= UINT64_C(0x5555555555555555) << shift;
     // Special implementation of popcount32 for our use case
     uint32_t v = value + (value >> 32);
     v  = (v & 0x33333333) + ((v >> 2) & 0x33333333);
@@ -1497,6 +1508,16 @@ std::string CountLiberties::CompressedColumn::raw_column_string() const {
     }
     ss << "}";
     return ss.str();
+}
+
+ALWAYS_INLINE
+bool equal(CountLiberties::CompressedColumn const& lhs, CountLiberties::CompressedColumn const& rhs) {
+    return lhs.column() == rhs.column();
+}
+
+ALWAYS_INLINE
+bool _equal(CountLiberties::CompressedColumn const& lhs, CountLiberties::CompressedColumn const& rhs) {
+    return lhs._column() == rhs._column();
 }
 
 /* ========================================================================= */
@@ -1850,8 +1871,8 @@ void CountLiberties::insert(ThreadData& thread_data, EntrySet* map, Entry const 
     if (map->insert(entry, result)) {
         // Already existed
         // std::cout << "           Already exists with count " << (uint) result->liberties() << "\n";
-        if (entry.liberties() <= result->entry.liberties()) return;
-        result->entry = entry;
+        if (entry.liberties() > result->entry.liberties())
+          result->entry = entry;
     }
 }
 
@@ -2061,13 +2082,14 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
 
             auto found = backbone_set.find(entry, index_mask);
             if (!found) fatal("Did not find entry backbone");
-            uint64_t max_liberties = found->entry.liberties();
-            if (liberties < max_liberties) {
+            if (true || !equal(entry, found->entry)) {
+                uint64_t max_liberties = found->entry.liberties();
                 uint64_t nr_empty = entry.nr_empty(index_mask, found->entry);
                 // std::cout << "nr_empty=" << nr_empty << "\n";
                 // if (liberties + nr_empty <= max_liberties) continue;
                 if (liberties + nr_empty <= max_liberties) {
-                    if (liberties + nr_empty < max_liberties || nr_empty) {
+                    if (liberties + nr_empty < max_liberties || nr_empty ||
+                        found->entry.any_empty(index_mask, entry)) {
                         // std::cout << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << max_liberties << " nr_empty=" << nr_empty << std::endl;
                         continue;
                     }
