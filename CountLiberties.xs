@@ -6,11 +6,17 @@
 // Use tcmalloc, part of Google Performance Tools:
 //   http://goog-perftools.sourceforge.net/
 // This is optional. Standard system malloc works fine but is slower and bloats
+// Notice that this define is NOT what decides that the program runs with
+// tcmalloc. That is done with a preload (use count_liberties --tcmalloc)
+// This define merely makes some tcmalloc memory statistics available
 #define TCMALLOC
 
 // Use jemalloc
 //   http://www.canonware.com/jemalloc/
 // This is optional. Standard system malloc works fine but is slower and bloats
+// Notice that this define is NOT what decides that the program runs with
+// jemalloc. That is done with a preload (use count_liberties --jemalloc)
+// This define merely makes some jemalloc memory statistics available
 #define JEMALLOC
 
 // If CONDITION_VARIABLE is not defined mutexes will be used in an undefined way
@@ -333,7 +339,6 @@ class CountLiberties {
         friend bool less(CompressedColumn const& lhs, CompressedColumn const& rhs);
         friend bool _less(CompressedColumn const& lhs, CompressedColumn const& rhs);
       protected:
-        static uint const top_bit = 1 << (sizeof(uint)*8-1);
         static uint const shift64 = 8*(sizeof(uint64_t) - COMPRESSED_SIZE);
         static uint const shift8  = 8*(sizeof(uint64_t) - 1);
         static uint64_t const column_mask64	= UINT64_C(-1) << shift64;
@@ -359,9 +364,6 @@ class CountLiberties {
         }
 
       private:
-        static uint const popcount_table_[256];
-        static uint const empty_mask_table_[256];
-
         // The actual column data is in the COMPRESSED_SIZE MSBs
         // For Entry: liberties will be in the LSB
         // For Entry: history bits will be inbetween,
@@ -387,6 +389,8 @@ class CountLiberties {
             _column(_column() - sub);
         };
 
+        // Calculate hash signature of a finished column
+        // Used to recognize repeated columns
         uint64_t signature(Liberties max, int from) const {
             // Notice that diff can be "negative" because max is only over
             // the entries with at most 1 chain. In such case the result will
@@ -444,7 +448,8 @@ class CountLiberties {
     // Never resize except if empty
     // Never give back memory
     // Never erase
-    // Knows how an invalid Entry looks
+    // Knows what an invalid Entry looks like
+    // As a result it's WAY faster than any normal hash implementation
     class EntrySet {
       public:
         typedef size_t size_type;
@@ -1359,22 +1364,6 @@ CountLiberties::Column::Column(char const* from, int height) {
 }
 
 /* ========================================================================= */
-uint const CountLiberties::CompressedColumn::popcount_table_[256] = {
-#	define B2(n) n,     n+1,     n+1,     n+2
-#	define B4(n) B2(n), B2(n+1), B2(n+1), B2(n+2)
-#	define B6(n) B4(n), B4(n+1), B4(n+1), B4(n+2)
-    B6(0), B6(1), B6(1), B6(2)
-};
-uint const CountLiberties::CompressedColumn::empty_mask_table_[256] = {
-#	define E2(n) 0+n, 0+n, 0+n, 1+n
-#	define E4(n) E2(0+n), E2(0+n), E2(0+n), E2(2+n)
-#	define E6(n) E4(0+n), E4(0+n), E4(0+n), E4(4+n)
-    E6(0),
-    E6(0),
-    E6(0),
-    E6(8),
-};
-
 ALWAYS_INLINE
 auto CountLiberties::CompressedColumn::any_empty(uint64_t index_mask, uint64_t mask, uint shift) const -> bool {
     index_mask |= mask;
@@ -2287,7 +2276,7 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
     // auto const down_black_up	= down_mask & BLACK_UP_MASK;
 
     // index_mask should be based on from, but except at the current position
-    // args.index0 has the same bits and we will never look at the there
+    // args.index0 has the same bits and we will never look at the different bit
     // uint64_t index_mask	= index_masks_[from];
     uint64_t index_mask	= index_masks_[args.index0];
 
@@ -2338,7 +2327,7 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
             }
 
             if (sym0) sym_compress(result, args.index0, args.rindex0);
-            // The history map is initialized with zeroes so record0 is a noop
+            // The history map is initialized with zeroes so record0 is a no op
             // result.record0(args.record);
             if (DEBUG_FLOW) {
                 std::cout << "         Empty: '" <<
@@ -2383,10 +2372,11 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
                     auto up = entry.test_vertex(up_mask);
                     if (up) {
                         if (left & BLACK_UP) {
-                            // We were already connected. Do nothing
-                            // We could prune the loop because it is never
-                            // optimal, but the program will soon discover this
-                            // for itself
+                            // They were already connected, so we just created
+                            // a loop. No new connection bits need to be set.
+                            // We can prune the loop because it is never
+                            // optimal, though the program would soon discover
+                            // this for itself
                             if (PRUNE_LOOPS) continue;
                         } else {
                             result.add_direction(black_up_down);
@@ -2422,10 +2412,11 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
                     auto down = entry.test_vertex(down_mask);
                     if (down) {
                         if (left & BLACK_DOWN) {
-                            // We were already connected. Do nothing
-                            // We could prune the loop because it is never
-                            // optimal, but the program will soon discover this
-                            // for itself
+                            // They were already connected, so we just created
+                            // a loop. No new connection bits need to be set.
+                            // We can prune the loop because it is never
+                            // optimal, though the program would soon discover
+                            // this for itself
                             if (PRUNE_LOOPS) continue;
                         } else {
                             result.add_direction(black_up_down);
@@ -2598,12 +2589,8 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
         int j  = indices[i];
         int rj = reverse_bits[j];
 
-        // The rj+bits map can never get filled since j+rbits is smaller
-
         if (j == rj) {
             // std::cout << "call_asym j==rj, direction=" << direction << "\n";
-            // The j + bits map can never get filled since rj + bits is smaller
-            // maps_[j+bits]       = &thread_data[2];
 
             size_t grow1 = entries_[j].size() + entries_[j+bits].size();
             size_t grow2 = entries_[j+rbits].size() + entries_[j+cbits].size();
