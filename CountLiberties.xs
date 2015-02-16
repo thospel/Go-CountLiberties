@@ -141,6 +141,8 @@ class CountLiberties {
         BITS_PER_VERTEX = 2,
         STONE_MASK	= (1 << BITS_PER_VERTEX) -1,		// 0x03,
 
+        // MAX_SIZE will effectively be rounded up to the next multiple of 4
+        // (result available as EXPANDED_SIZE)
         // MAX_SIZE can be increased up to 24, but 21 or above leave only
         // 8 HISTORY_BITS, so finding an actual solution will be slow
         MAX_SIZE	= 19,					// 19
@@ -1251,6 +1253,14 @@ double const CountLiberties::cost_multiplier = 1. / cost_divider;
 CountLiberties::ThreadData::ThreadData() :
     operation_{WAITING}
 {
+    if (0) {
+        backbone_set.reserve(1024);
+        backbone_set.clear();
+        for (auto& map: *this) {
+            map.reserve(1024);
+            map.clear();
+        }
+    }
     work_init();
 }
 
@@ -2095,8 +2105,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
             //        " (raw liberties=" << backbone.liberties() << ")\n";
 
             auto found = backbone_set.find(entry, index_mask);
-            if (!found) fatal("Did not find entry backbone");
-            if (true || !equal(entry, found->entry)) {
+            assert(found);
+            if (!equal(entry, found->entry)) {
                 uint64_t max_liberties = found->entry.liberties();
                 uint64_t nr_empty = entry.nr_empty(index_mask, found->entry);
                 // std::cout << "nr_empty=" << nr_empty << "\n";
