@@ -1271,7 +1271,7 @@ CountLiberties::ThreadData::~ThreadData() {
 
 /* ========================================================================= */
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 char CountLiberties::Column::to_string(char* result, size_t height) const {
     char stack[EXPANDED_SIZE];
     char unused = 'A';
@@ -1584,7 +1584,7 @@ void CountLiberties::Threads::catch_exception() {
     has_eptr_ = true;
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::Threads::_do_work(CountLiberties* count_liberties,
                                        ThreadData& thread_data) {
     switch(thread_data.operation_) {
@@ -1616,7 +1616,7 @@ void CountLiberties::Threads::_do_work(CountLiberties* count_liberties,
     work_done(&thread_data);
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::Threads::do_work(CountLiberties* count_liberties,
                                        ThreadData& thread_data) {
     thread_data.operation_ = operation_;
@@ -1836,13 +1836,13 @@ void CountLiberties::cost_propagate(int pos) {
         cost_[pos+i] *= cost_multiplier;
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::expand(Column& column,
                             CompressedColumn const& compressed, int from) const {
     compressed.expand(column, from, height());
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::CompressedColumn::expand(Column& expanded,
                                               int from, int height) const {
     int from_mask = ~from << 2;
@@ -1874,7 +1874,7 @@ void CountLiberties::sym_compress(CompressedColumn& compressed, int index, int r
     reversed_ = true;
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::insert(ThreadData& thread_data, EntrySet* map, Entry const entry) {
     // std::cout << "         Insert count " << (uint) entry.liberties() << "\n";
     // std::cout << "         Out: " << column_string(entry, index) << " -> " << (uint) entry.liberties() << "\n";
@@ -2105,7 +2105,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
             //        " (raw liberties=" << backbone.liberties() << ")\n";
 
             auto found = backbone_set.find(entry, index_mask);
-            assert(found);
+            // Interesting. Doing this test makes the program marginally faster
+            if (!found) fatal("Did not find entry backbone");
             if (!equal(entry, found->entry)) {
                 uint64_t max_liberties = found->entry.liberties();
                 uint64_t nr_empty = entry.nr_empty(index_mask, found->entry);
@@ -2196,7 +2197,7 @@ void CountLiberties::inject(int direction, Args args,
     }
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::process(int direction, Args const args,
                              ThreadData& thread_data) {
     _process(false, direction, args, args.index0, false, thread_data);
@@ -2204,7 +2205,7 @@ void CountLiberties::process(int direction, Args const args,
 }
 
 // Inline because it only has 1 call site
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::process_down(Args const args, ThreadData& thread_data) {
     process( 1, args, thread_data);
 }
@@ -2219,7 +2220,7 @@ void CountLiberties::process_final(Args const args, ThreadData& thread_data) {
     process( 0, args, thread_data);
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::process_asym(int direction, Args const args, ThreadData& thread_data) {
     if (direction)
         process_up(args, thread_data);
@@ -2230,7 +2231,7 @@ void CountLiberties::process_asym(int direction, Args const args, ThreadData& th
 // This is the core logic of the whole program.
 // Add a bump in the given direction (0 combines two bumps to a flat column)
 // Apply symmetry at the end (except when going down, direction > 0)
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::_process(bool inject, int direction, Args const args,
                               uint from, bool left_black,
                               ThreadData& thread_data) {
@@ -2570,7 +2571,7 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     // std::cout << "end" << std::endl;
 }
 
-inline __attribute__((always_inline))
+ALWAYS_INLINE
 void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data) {
     int  bits = 1 << pos;
     int rbits = 1 << (height() - 1 - pos);
