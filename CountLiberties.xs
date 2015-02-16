@@ -1006,6 +1006,7 @@ class CountLiberties {
     };
 
     struct Args {
+        EntrySet *map0, *map1;
         uint pos;
         uint index0, rindex0;
         uint index1, rindex1;
@@ -1161,7 +1162,7 @@ class CountLiberties {
         entries.reserve(0);
         entries.shrink_to_fit();
     }
-    void entry_transfer(ThreadData& thread_data, int index, uint pos, int up, int down) HOT;
+    void entry_transfer(ThreadData& thread_data, EntrySet* map, int index, uint pos, int up, int down) HOT;
     void cost_propagate(int x, int y) { cost_propagate(x * height() + y); }
     void cost_propagate(int pos);
 
@@ -1172,8 +1173,7 @@ class CountLiberties {
     static double const cost_multiplier;
 
     // Stuff shared among threads
-    std::vector<EntrySet*> maps_ CACHE_ALIGNED;
-    int const height_;
+    int const height_ CACHE_ALIGNED;
     int const nr_classes_;
     std::vector<EntryVector> entries_;
     std::vector<int> reverse_bits_;
@@ -1211,8 +1211,8 @@ class CountLiberties {
     // These mutable vectors don't really belong in the object and could be
     // allocated on stack in case of need. However to avoid repeated mallocs
     // and frees we put them inside the object
-    // sizes_ should in principle be a size_t, but the data is spread over
-    // the maps_ vector and bin size remains modest even for the largest board
+    // sizes_ should in principle be a size_t, but the data is spread over the
+    // entries_ vector and bin size remains modest even for the largest board
     // size this program can hope to handle. Therefore an uint will be ok.
     // (saves some memory and makes the program about 1% faster)
     class Size {
@@ -1947,12 +1947,11 @@ auto CountLiberties::signature() -> uint64_t {
     return signature;
 }
 
-void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos, int up, int down) {
+void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int index, uint pos, int up, int down) {
     if (DEBUG_STORE)
         std::cout << "   Write entryset " << index << "\n";
-    auto& map		= *maps_[index];
     auto& entries	= entries_[index];
-    if (map.empty()) {
+    if (map->empty()) {
         entry_clear(entries);
         if (DEBUG_STORE)
             std::cout << "   Close entryset " << index << "\n";
@@ -1963,13 +1962,13 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
     uint64_t index_mask	= index_masks_[index];
 
     entries.clear();
-    entries.reserve(map.size());
-    backbone_set.reserve(map.size());
+    entries.reserve(map->size());
+    backbone_set.reserve(map->size());
     auto   up_mask = Entry::stone_mask(pos);
     auto down_mask = Entry::stone_mask(height() - 1 - pos);
-    // std::cout << "map size=" << map.size() << "\n";
+    // std::cout << "map size=" << map->size() << "\n";
 
-    for (auto const& element: map) {
+    for (auto const& element: *map) {
         auto entry = element.entry;
         uint64_t liberties{entry.liberties()};
         if (up) {
@@ -1977,7 +1976,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                 // EMPTY
                 Entry probe{entry};
                 probe.set_liberty(up_mask);	// Set LIBERTY
-                auto found = map.find(probe);
+                auto found = map->find(probe);
                 if (found)
                     if (liberties < found->entry.liberties()) {
                         // std::cout << "up 1 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
@@ -1987,7 +1986,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                 // LIBERTY
                 Entry probe{entry};
                 probe.set_empty(up_mask);	// Set EMPTY
-                auto found = map.find(probe);
+                auto found = map->find(probe);
                 if (found)
                     if (liberties <= found->entry.liberties()) {
                         // std::cout << "up 2 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
@@ -2000,7 +1999,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                 // EMPTY
                 Entry probe{entry};
                 probe.set_liberty(down_mask);	// Set LIBERTY
-                auto found = map.find(probe);
+                auto found = map->find(probe);
                 if (found)
                     if (liberties < found->entry.liberties()) {
                         // std::cout << "down 1 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
@@ -2010,7 +2009,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
                 // LIBERTY
                 Entry probe{entry};
                 probe.set_empty(down_mask);	// Set EMPTY
-                auto found = map.find(probe);
+                auto found = map->find(probe);
                 if (found)
                     if (liberties <= found->entry.liberties()) {
                         // std::cout << "down 2 " << column_string(entry, index) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, index) << " raw libs=" << found->entry.liberties() << std::endl;
@@ -2139,7 +2138,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
     if (index > thread_data.max_entries) thread_data.max_entries = index;
     // std::cout << "entries size=" << entries.size() << "\n";
 
-    map.clear();
+    map->clear();
     backbone_set.clear();
     // This is a slight speedup. Possibly because it does not delay fixing
     // up the TERMINATOR position (it's still in cache now)
@@ -2250,9 +2249,7 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
     if (direction == 0) up_or_down_black = up_black | down_black;
 
     bool sym0 = direction <= 0 && args.index0 >= args.rindex0;
-    EntrySet* map0 = maps_[sym0 ? args.rindex0 : args.index0];
     bool sym1 = direction <= 0 && args.index1 >= args.rindex1;
-    EntrySet* map1 = maps_[sym1 ? args.rindex1 : args.index1];
 
     uint pos2 = Entry::stone_shift(args.pos);
     auto const stone_mask	= Entry::_stone_mask(pos2);
@@ -2335,7 +2332,7 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
                     result.history_bitstring() << ") set=" << (sym0 ? args.rindex0 : args.index0) << "\n";
             }
             if (inject) entry00_.emplace_back(result);
-            else insert(thread_data, map0, result);
+            else insert(thread_data, args.map0, result);
         }
 
       BLACK_STONE:
@@ -2452,7 +2449,7 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
                     "' -> " << result.liberties(offset_) << " (" <<
                     result.history_bitstring() << ") set=" << (sym1 ? args.rindex1 : args.index1) << "\n";
             }
-            insert(thread_data, map1, result);
+            insert(thread_data, args.map1, result);
         }
     }
     // This would be the place to clear the entry vector
@@ -2463,9 +2460,14 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
 void CountLiberties::call_down(int pos, ThreadData& thread_data) {
     int bits  = 1 << pos;
 
+    auto map0 = &thread_data[0];
+    auto map1 = &thread_data[1];
+
     Args args;
-    args.filter = thread_data.filter;
-    args.record = thread_data.record;
+    args.map0    = map0;
+    args.map1    = map1;
+    args.filter  = thread_data.filter;
+    args.record  = thread_data.record;
     args.old_min = thread_data.old_min;
     args.pos     = pos;
 
@@ -2476,11 +2478,6 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
         int j = indices[i];
 
         // std::cout << "call_down\n";
-        EntrySet* map0 = &thread_data[0];
-        EntrySet* map1 = &thread_data[1];
-        maps_[j]      = map0;
-        maps_[j+bits] = map1;
-
         args.index0  = j;
         args.index1  = j+bits;
         args.rindex0 = j;
@@ -2496,8 +2493,8 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
         // If neighbour the given position is a guaranteed LIBERTY
         // Consider only the up direction since the bump is not down yet
         int neighbour = ~(j << 1) & bits;
-        entry_transfer(thread_data, j,      pos, neighbour, false);
-        entry_transfer(thread_data, j+bits, pos, false,     false);
+        entry_transfer(thread_data, map0, j,      pos, neighbour, false);
+        entry_transfer(thread_data, map1, j+bits, pos, false,     false);
     }
     // std::cout << "end" << std::endl;
 }
@@ -2508,7 +2505,12 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     auto const* indices = &indices_[0];
     auto const* reverse_bits = &reverse_bits_[0];
 
+    auto map0 = &thread_data[0];
+    auto map1 = &thread_data[1];
+
     Args args;
+    args.map0    = map0;
+    args.map1    = map1;
     args.filter  = thread_data.filter;
     args.record  = thread_data.record;
     args.old_min = thread_data.old_min;
@@ -2529,11 +2531,6 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
         assert(j == rj || entries_[rj].size() == 0);
         assert(j == rj || entries_[rj+bits].size() == 0);
 
-        EntrySet* map0 = &thread_data[0];
-        EntrySet* map1 = &thread_data[1];
-        maps_[j]      = map0;
-        maps_[j+bits] = map1;
-
         args.index0  = j;
         args.index1  = j+bits;
         args.rindex0 = rj;
@@ -2548,8 +2545,8 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
 
         // Consider both directions since the bump is getting straightened here.
         int neighbours = ~(j << 1 | j >> 1) & bits;
-        entry_transfer(thread_data, j,       pos, neighbours, false);
-        entry_transfer(thread_data, j+bits,  pos, false,      false);
+        entry_transfer(thread_data, map0, j,       pos, neighbours, false);
+        entry_transfer(thread_data, map1, j+bits,  pos, false,      false);
         // rj and rj + bits are already empty (for j != rj) so no clear needed
         // if (j != rj) {
         //     entry_clear(rj);
@@ -2570,6 +2567,10 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
     auto const* indices = &indices_[0];
     auto const* reverse_bits = &reverse_bits_[0];
 
+    auto map0 = &thread_data[0];
+    auto map1 = &thread_data[1];
+    auto map2 = &thread_data[2];
+
     Args args;
     args.filter  = thread_data.filter;
     args.record  = thread_data.record;
@@ -2582,13 +2583,7 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
         int j  = indices[i];
         int rj = reverse_bits[j];
 
-        maps_[j]	= &thread_data[0];
-        maps_[j+rbits]	= &thread_data[1];
-#ifndef NDEBUG
         // The rj+bits map can never get filled since j+rbits is smaller
-        // maps_[rj+bits]       = &thread_data[5];
-        maps_[rj+bits]	= nullptr;
-#endif /* NDEBUG */
 
         if (j == rj) {
             // std::cout << "call_asym j==rj, direction=" << direction << "\n";
@@ -2597,9 +2592,11 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
 
             size_t grow1 = entries_[j].size() + entries_[j+bits].size();
             size_t grow2 = entries_[j+rbits].size() + entries_[j+cbits].size();
-            maps_[j+rbits]->reserve(grow1 + grow2 + 1);
-            maps_[j]->reserve(grow1+1);
+            map1->reserve(grow1 + grow2 + 1);
+            map0->reserve(grow1+1);
 
+            args.map0    = map0;
+            args.map1    = map1;
             args.index0  = j;
             args.index1  = j+bits;
             args.rindex0 = rj;
@@ -2609,11 +2606,12 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             if (j == 0) inject(direction, args, thread_data);
 
             int neighbour = ~(j >> 1) & bits;
-            entry_transfer(thread_data, j, pos, neighbour, neighbour);
+            entry_transfer(thread_data, map0, j, pos, neighbour, neighbour);
 
-            maps_[j+cbits] = &thread_data[0];
-            maps_[j+cbits]->reserve(grow2);
+            map0->reserve(grow2);
 
+            args.map0    = map1;
+            args.map1    = map0;
             args.index0  = j+rbits;
             args.index1  = j+cbits;
             args.rindex0 = rj+bits;
@@ -2621,9 +2619,8 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             process_asym(direction, args, thread_data);
 
             // The j + bits map can never get filled since rj + bits is smaller
-            // entry_transfer(thread_data, j+bits,  pos, false,  true);
             entry_clear(j+bits);
-            entry_transfer(thread_data, j+rbits, pos,  neighbour & direction, false);
+            entry_transfer(thread_data, map1, j+rbits, pos,  neighbour & direction, false);
         } else {
             // std::cout << "call_asym j!=rj, direction=" << direction << "\n";
             assert(j < rj);
@@ -2634,29 +2631,18 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             assert(entries_[rj+cbits].size() == 0);
 
             // One of j+bits and rj+rbits will be unused
-            // maps_[j+bits]	= &thread_data[2];
-            // maps_[rj+rbits]	= &thread_data[3];
-            auto mj = std::min(j+bits, rj+rbits);
-            maps_[mj]		= &thread_data[2];
-#ifndef NDEBUG
-            // The rj map can never get filled since j is smaller
-            // maps_[rj]            = &thread_data[4];
-            maps_[rj]		= nullptr;
-            // The rj+cbits map can never get filled since j+cbits is smaller
-            // maps_[rj+cbits] = &thread_data[6];
-            maps_[rj+cbits]	= nullptr;
-#endif /* NDEBUG */
-
             // size_t grow3 = entries_[rj+rbits].size() + entries_[rj+cbits].size();
             size_t grow3 = entries_[rj+rbits].size();
             size_t grow4 = entries_[j+rbits].size() + entries_[j+cbits].size();
             // size_t grow2 = entries_[rj].size() + entries_[rj+bits].size();
             size_t grow2 = entries_[rj].size();
-            maps_[j+rbits]->reserve(grow2+grow4);
+            map1->reserve(grow2+grow4);
             size_t grow1 = entries_[j].size() + entries_[j+bits].size();
-            maps_[mj]->reserve(grow1+grow3);
-            maps_[j]->reserve(grow1+grow2);
+            map2->reserve(grow1+grow3);
+            map0->reserve(grow1+grow2);
 
+            args.map0    = map0;
+            args.map1    = map2;
             args.index0  = j;
             args.index1  = j+bits;
             args.rindex0 = rj;
@@ -2664,6 +2650,8 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             process_asym(direction, args, thread_data);
 
             if (grow2) {
+                args.map0    = map0;
+                args.map1    = map1;
                 args.index0  = rj;
                 args.index1  = rj+bits;
                 args.rindex0 = j;
@@ -2673,15 +2661,15 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
 
             int   up_neighbour = ~(j >> 1) &  bits;
             int down_neighbour = ~(j << 1) & rbits;
-            entry_transfer(thread_data,  j, pos,  up_neighbour,  down_neighbour);
+            entry_transfer(thread_data,  map0, j, pos,  up_neighbour,  down_neighbour);
             // The rj map can never get filled since j is smaller
-            // entry_transfer(thread_data, rj, pos,  true,  true);
             entry_clear(rj);
 
-            maps_[j+cbits]	= &thread_data[0];
-            maps_[j+cbits]->reserve(grow3+grow4);
+            map0->reserve(grow3+grow4);
 
             if (grow3) {
+                args.map0    = map2;
+                args.map1    = map0;
                 args.index0  = rj+rbits;
                 args.index1  = rj+cbits;
                 args.rindex0 = j+bits;
@@ -2692,27 +2680,27 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             if (j + bits <= rj+rbits) {
                 assert(j+bits < rj+rbits);
                 entry_clear(rj+rbits);
-                entry_transfer(thread_data,  j+bits,  pos, false,  down_neighbour & direction);
+                entry_transfer(thread_data,  map2, j+bits,  pos, false,  down_neighbour & direction);
             } else {
                 entry_clear(j+bits);
-                entry_transfer(thread_data, rj+rbits, pos,  down_neighbour & direction, false);
+                entry_transfer(thread_data, map2, rj+rbits, pos,  down_neighbour & direction, false);
             }
 
+            args.map0    = map1;
+            args.map1    = map0;
             args.index0  = j+rbits;
             args.index1  = j+cbits;
             args.rindex0 = rj+bits;
             args.rindex1 = rj+cbits;
             process_asym(direction, args, thread_data);
 
-            entry_transfer(thread_data,  j+rbits,      pos,  up_neighbour & direction, false);
+            entry_transfer(thread_data,  map1, j+rbits,      pos,  up_neighbour & direction, false);
             // The rj+bits map can never get filled since j+rbits is smaller
-            // entry_transfer(thread_data, rj+bits,       pos, false,  true);
             entry_clear(rj+bits);
             // The rj+cbits map can never get filled since j+cbits is smaller
-            // entry_transfer(thread_data, rj+cbits, pos, false, false);
             entry_clear(rj+cbits);
         }
-        entry_transfer(thread_data, j+cbits, pos, false, false);
+        entry_transfer(thread_data, map0, j+cbits, pos, false, false);
     }
     // std::cout << "end" << std::endl;
 }
@@ -3055,13 +3043,13 @@ void CountLiberties::clear() {
         threads_[0].new_min  = new_min_;
         threads_[0].new_max  = new_max_;
         threads_[0].real_max = 0;
-        maps_[0] = &threads_[0][0];
-        insert(threads_[0], maps_[0], entry);
+        auto map0 = &threads_[0][0];
+        insert(threads_[0], map0, entry);
         new_min_   = threads_[0].new_min;
         new_max_   = threads_[0].new_max;
         max_index_ = threads_[0].max_index;
         max_entry_ = threads_[0].max_entry;
-        entry_transfer(threads_[0] , 0, 0, false, false);
+        entry_transfer(threads_[0], map0, 0, 0, false, false);
 
         // no need to initialize most old_ variables. new_round() will set them
         new_round();
@@ -3115,7 +3103,6 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     entry00_.reserve(1);
     // One extra to hold the empty column injector
     entries_.resize(nr_classes()+1);
-    maps_.resize(nr_classes());
     sizes_  .resize(nr_classes());
     indices_.resize(nr_classes());
     // 100 is an arbitrary starting point to the exponential resizes
