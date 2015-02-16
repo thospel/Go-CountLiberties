@@ -274,7 +274,6 @@ class CountLiberties {
             return nr_empty(backbone._column(), mask, shift);
         }
         bool multichain(uint64_t mask) const;
-        bool multichain(int from, int height) const;
         void expand(Column& column, int from, int height) const;
 
         auto test_vertex(uint64_t mask) const {
@@ -807,15 +806,16 @@ class CountLiberties {
         }
 #endif /* CONDITION_VARIABLE */
       public:
-        Entry max_entry CACHE_ALIGNED;
-        int  max_index;
-        uint real_max;
+        uint real_max CACHE_ALIGNED;
         uint new_max;
         uint new_min;
+        int max_entries;
       private:
         std::array<EntrySet, 3> maps_;
       public:
         EntrySet backbone_set;
+        Entry max_entry;
+        int  max_index;
         uint64_t result;
         uint old_min;
         int filter, record;
@@ -1046,9 +1046,6 @@ class CountLiberties {
     bool multichain(CompressedColumn const& compressed, uint64_t mask) const {
         return compressed.multichain(mask);
     }
-    bool multichain(CompressedColumn const& compressed, int from) const {
-        return compressed.multichain(from, height());
-    }
 
     void insert(ThreadData& thread_data, EntrySet* map, Entry const entry) HOT;
     uint64_t signature() HOT;
@@ -1202,6 +1199,7 @@ class CountLiberties {
     uint new_min_;
     uint filter_need_;
     int target_width_;
+    int max_entries_;
     // Reversed is a threads shared non atomic variable unprotected by any lock
     // We only ever will use it if there is only one column in the current
     // EntrySets, in which case only one thread will have updated it
@@ -1472,7 +1470,6 @@ void CountLiberties::CompressedColumn::_join_down(uint64_t stone_mask, uint64_t 
     }
 }
 
-// Strangely enough this turns out to be slower than the loop based one below
 inline bool CountLiberties::CompressedColumn::multichain(uint64_t mask) const {
     // ~ column changes BLACK and BLACK_UP to 11 and 10 respectively
     // & 0xAAAAAAAAAAAAAAAA changes them both to 10 (and other blacks are 00)
@@ -1482,23 +1479,6 @@ inline bool CountLiberties::CompressedColumn::multichain(uint64_t mask) const {
     // bits now contains as many 1 bits as there are chains
     // reverse power of 2 check (0 is considered a power of 2 which is wanted)
     return (bits & (bits - 1)) != 0;
-}
-
-inline bool CountLiberties::CompressedColumn::multichain(int from, int height) const {
-    int from_mask = ~from << 2;
-    height *= 8 / BITS_PER_VERTEX;
-    auto value = column();
-    uint chains = 0;
-
-    for (int i = 0; i < height; ++i) {
-        auto vertex = (from_mask & 0x4) | (value & STONE_MASK);
-        chains += start_table_[vertex];
-        if (chains > 1) return true;
-        from_mask >>= 1;
-        value >>= BITS_PER_VERTEX;
-    }
-
-    return false;
 }
 
 std::string CountLiberties::CompressedColumn::raw_column_string() const {
@@ -2082,8 +2062,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
             if (liberties > new_max) {
                 if (liberties > thread_data.real_max)
                     thread_data.real_max = liberties;
-                // if (!multichain(entry, index_mask)) {
-                if (!multichain(entry, index)) {
+                if (!multichain(entry, index_mask)) {
                     // If we get here there are NOT two or more different chains
                     // So no chains or 1 connected chain
                     new_max   = liberties;
@@ -2133,8 +2112,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
             if (liberties > new_max) {
                 if (liberties > thread_data.real_max)
                     thread_data.real_max = liberties;
-                // if (!multichain(entry, index_mask)) {
-                if (!multichain(entry, index)) {
+                if (!multichain(entry, index_mask)) {
                     // If we get here there are NOT two or more different chains
                     // So no chains or 1 connected chain
                     new_max   = liberties;
@@ -2158,6 +2136,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, int index, uint pos
     }
     entries.shrink_to_fit();
     thread_data.new_min = new_min;
+    if (index > thread_data.max_entries) thread_data.max_entries = index;
     // std::cout << "entries size=" << entries.size() << "\n";
 
     map.clear();
@@ -2765,6 +2744,7 @@ int CountLiberties::run_round(int x, int pos) {
         thread_data.record   = record;
         thread_data.old_min  = old_min_;
         thread_data.new_min  = new_min_;
+        thread_data.max_entries = 0;
     }
 
     auto* sizes    = &sizes_[0];
@@ -2806,7 +2786,7 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
-        int limit = nr_classes() - 1;
+        int limit = max_entries_;
         limit &= ~bits;
         for (int j=1; j<=limit; ++j) {
             if (j & bits) continue;
@@ -2862,7 +2842,7 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
-        int limit = nr_classes() - 1;
+        int limit = max_entries_;
         limit &= ~cbits;
         for (int j=1; j<=limit; ++j) {
             if (j & cbits) continue;
@@ -2925,6 +2905,7 @@ int CountLiberties::run_round(int x, int pos) {
     int ttop = sizes - &sizes_[0];
     uint threads = threads_.execute(this, ttop);
 
+    max_entries_ = 0;
     uint t_max = threads;
     for (uint t=0; t<threads; ++t) {
         if (threads_[t].new_max > new_max_) {
@@ -2939,6 +2920,9 @@ int CountLiberties::run_round(int x, int pos) {
 
         if (threads_[t].new_min < new_min_)
             new_min_ = threads_[t].new_min;
+
+        if (threads_[t].max_entries > max_entries_)
+            max_entries_ = threads_[t].max_entries;
     }
     if (t_max < threads) {
         max_index_ = threads_[t_max].max_index;
@@ -3102,7 +3086,8 @@ void CountLiberties::clear_filter() {
 CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     height_{height},
     nr_classes_{1 << height_},
-    threads_{nr_threads, save_thread}
+    threads_{nr_threads, save_thread},
+    max_entries_{0}
 {
     // std::cout << "height=" << height_ << "\n";
     if (height > EXPANDED_SIZE)
