@@ -158,6 +158,10 @@ class CountLiberties {
         MAX_THREADS	= 1024,
     };
 
+    static constexpr float DEFAULT_LOAD_FACTOR	= 0.5;
+    static constexpr float MAP_LOAD_FACTOR	= 0.5;
+    static constexpr float BACKBONE_LOAD_FACTOR	= 0.4;
+
     enum Operation {
         CALL_DOWN,
         CALL_UP,
@@ -516,7 +520,7 @@ class CountLiberties {
             used_{0},
             mask_{0},
             size_{0},
-            max_load_multiplier_{2.}
+            max_load_multiplier_{1./DEFAULT_LOAD_FACTOR}
             {
                 value_type terminator;
                 terminator.entry._column(TERMINATOR);
@@ -3108,6 +3112,9 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     // 100 is an arbitrary starting point to the exponential resizes
     // Avoid the need of many small initial steps before serious progress
     indices0_.resize(100);
+    map_load_factor(MAP_LOAD_FACTOR);
+    backbone_load_factor(BACKBONE_LOAD_FACTOR);
+
     clear();
 
     threads_.start(this);
