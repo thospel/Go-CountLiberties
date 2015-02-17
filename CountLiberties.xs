@@ -2236,44 +2236,51 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
 
     // std::cout << "   From: " << from << "[[" << args.index0 << ", " << args.index1 << "], [" << args.rindex0 << ", " << args.rindex1 << "]] (final)\n";
 
+    uint pos2 = Entry::stone_shift(args.pos);
+
     uint up_black, down_black, up_or_down_black;
-    if (direction >= 0) {
+    uint64_t up_mask, down_mask;
+    // Short circuit the test. compiler dead code elimination will do it for us
+    if (true || direction >= 0) {
         // Make sure that args.pos == 0 works and results in up_black == 0
         // Should really be based on from, but args.index0 has the same bits
         // at position args.pos-1
         // up_black = (2*from >> args.pos) & 1;
         up_black = (2*args.index0 >> args.pos) & 1;
+
+    	up_mask = up_black ?
+            Entry::_stone_mask(pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
+            args.pos ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) : 0;
+        // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
     }
-    if (direction <= 0) {
+
+    // Short circuit the test. compiler dead code elimination will do it for us
+    if (true || direction <= 0) {
         // Should really be based on from, but args.index0 has the same bits
         // at position args.pos+1
         // down_black = (from >> args.pos) & 2;
         down_black = (args.index0 >> args.pos) & 2;
+
+        // We need to test args.pos. Normally you would think that if too big
+        // the stone mask will shift out. However with the barrel shifter of
+        // modern CPUs it will actually not shift at all
+        down_mask	= down_black ?
+            Entry::_stone_mask(pos2 + BITS_PER_VERTEX, BLACK_UP) :
+            args.pos < EXPANDED_SIZE-1 ?
+                       Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
+        // auto const down_black_up	= down_mask & BLACK_UP_MASK;
     }
-    if (direction == 0) up_or_down_black = up_black | down_black;
+
+    // Short circuit the test. compiler dead code elimination will do it for us
+    if (true || direction == 0) up_or_down_black = up_black | down_black;
 
     bool sym0 = direction <= 0 && args.index0 >= args.rindex0;
     bool sym1 = direction <= 0 && args.index1 >= args.rindex1;
 
-    uint pos2 = Entry::stone_shift(args.pos);
     auto const stone_mask	= Entry::_stone_mask(pos2);
     auto const black_up		= stone_mask & BLACK_UP_MASK;
     auto const black_down	= stone_mask & BLACK_DOWN_MASK;
     auto const black_up_down	= stone_mask; // stone_mask & BLACK_UP_DOWN_MASK
-
-    uint64_t const up_mask	= up_black ?
-        Entry::_stone_mask(pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
-        args.pos ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) : 0;
-    // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
-
-    // We need to test args.pos. Normally you would think that if too big the
-    // stone mask will shift out. However with the barrel shifter of modern CPUs
-    // it will actually not shift at all
-    auto const down_mask	= down_black ?
-        Entry::_stone_mask(pos2 + BITS_PER_VERTEX, BLACK_UP) :
-        args.pos < EXPANDED_SIZE-1 ?
-                   Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
-    // auto const down_black_up	= down_mask & BLACK_UP_MASK;
 
     // index_mask should be based on from, but except at the current position
     // args.index0 has the same bits and we will never look at the different bit
