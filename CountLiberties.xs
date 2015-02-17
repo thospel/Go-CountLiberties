@@ -113,6 +113,11 @@ bool const COST           = true;
 // solutions but at least one optimal solution is guaranteed to survive
 bool const PRUNE_LOOPS  = true;
 
+// Depend on a theorem that says you can't have long lines along the top/bottom
+// for boards with height >= 3 (which does not mean you cannot have stones
+// on these lines. Towers can reach all the way)
+bool const PRUNE_SIDES  = true;
+
 // For reporting memory usage
 size_t const PAGE_SIZE = 4096;
 
@@ -2259,7 +2264,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
             args.pos ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) : 0;
         // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
         // Test should be against (from & 0x2), but args.index0 has the same bit
-        if (false && direction > 0 && left_black && args.pos == 0 && (args.index0 & 0x2)) {
+        if (PRUNE_SIDES && direction > 0 && left_black && args.pos == 0 && (args.index0 & 0x2)) {
             // std::cout << "Hit up" << std::endl;
             args.filter = -1;
         }
@@ -2280,7 +2285,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
             args.pos < EXPANDED_SIZE-1 ?
                        Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
-        if (false && direction < 0 && left_black && args.pos == height()-1 && (from >> (args.pos-1) & 1)) {
+        if (PRUNE_SIDES && direction < 0 && left_black && args.pos == height()-1 && (from >> (args.pos-1) & 1)) {
             // std::cout << "Hit down" << std::endl;
             args.filter = -1;
         }
