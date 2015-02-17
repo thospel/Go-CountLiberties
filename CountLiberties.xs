@@ -828,7 +828,6 @@ class CountLiberties {
         Entry max_entry;
         int  max_index;
         uint64_t result;
-        uint old_min;
         int filter, record;
 #ifdef CONDITION_VARIABLE
         std::condition_variable work_condition_;
@@ -1206,7 +1205,9 @@ class CountLiberties {
     uint old_max_;
     uint new_max_;
     // Used to renormalize the liberty counts so we don't overflow Liberty
-    uint old_min_;
+    uint64_t old_min_;
+    uint64_t full_libs_;
+    Entry full_entry_;
     uint new_min_;
     uint filter_need_;
     int target_width_;
@@ -2301,6 +2302,12 @@ void CountLiberties::_process(bool inject, int direction, Args args,
     // std::cout << "\tentries " << from << " size " << entries_[inject ? nr_classes() : from].size() << "\n";
     for (auto entry: entries_[inject ? nr_classes() : from]) {
         if (DEBUG_FETCH) std::cout << "      Entry: " << entry.raw_column_string() << ", raw libs=" << static_cast<uint>(entry.liberties()) << "\n";
+        auto liberties = entry.liberties();
+        if (liberties <= full_libs_) {
+            liberties += entry.nr_empty(index_mask);
+            if (liberties < full_libs_) continue;
+            if (liberties == full_libs_ && !equal(entry, full_entry_)) continue;
+        }
         entry.liberties_subtract(args.old_min);
         if (DEBUG_FLOW) {
             std::cout << "      " << (inject ? "Inject" : "In") << ": '" <<
@@ -2490,7 +2497,7 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
     args.map1    = map1;
     args.filter  = thread_data.filter;
     args.record  = thread_data.record;
-    args.old_min = thread_data.old_min;
+    args.old_min = old_min_;
     args.pos     = pos;
 
     auto const* indices = &indices_[0];
@@ -2535,7 +2542,7 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     args.map1    = map1;
     args.filter  = thread_data.filter;
     args.record  = thread_data.record;
-    args.old_min = thread_data.old_min;
+    args.old_min = old_min_;
     args.pos     = pos;
 
     while (true) {
@@ -2596,7 +2603,7 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
     Args args;
     args.filter  = thread_data.filter;
     args.record  = thread_data.record;
-    args.old_min = thread_data.old_min;
+    args.old_min = old_min_;
     args.pos     = pos;
 
     while (true) {
@@ -2748,7 +2755,6 @@ int CountLiberties::run_round(int x, int pos) {
         thread_data.new_max  = new_max_;
         thread_data.filter   = filter;
         thread_data.record   = record;
-        thread_data.old_min  = old_min_;
         thread_data.new_min  = new_min_;
         thread_data.max_entries = 0;
     }
@@ -3007,6 +3013,19 @@ void CountLiberties::new_round() {
     // if (new_max_ == 0)
     //    fatal("No maximum");
 
+    // Find the number of liberties of the fully connected colum (if any)
+    full_libs_ = 0;
+    uint full_index = nr_classes()-1;
+    auto full_mask  = index_masks_[full_index];
+    for (auto const& entry: entries_[full_index]) {
+        // If there are bumps the column can be disconnected
+        if (!multichain(entry, full_mask)) {
+            full_libs_ = entry.liberties();
+            full_entry_ = entry;
+            break;
+        }
+    }
+
     if (new_min_ == MAX_LIBERTIES)
         fatal("minimum is still maxed out. Probably means no entries");
     if (new_min_ <= 0)
@@ -3072,6 +3091,7 @@ void CountLiberties::clear() {
         // no need to initialize most old_ variables. new_round() will set them
         new_round();
     } else {
+        full_libs_ = 0;
         old_max_  = 0;
         old_real_max_ = 0;
     }
