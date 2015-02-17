@@ -1195,14 +1195,14 @@ class CountLiberties {
     std::vector<uint64_t> index_masks_;
     EntryVector entry00_;
 
-    // Stuff not accessed from within a thread or constant
+    // Stuff not accessed from within a thread or constant during a thread
     Threads threads_;
     std::vector<std::vector<int>> filter_;
     std::vector<std::vector<int>> record_map_;
     std::vector<double> cost_;
     std::vector<Coordinate> record_;
-    std::vector<FullEntry> full_column_;
-    size_t full_index_;
+    uint64_t full_liberties_;
+    Entry full_entry_;
     Entry max_entry_;
     int offset_;		// Current Liberty renormalization
     int max_index_;
@@ -2304,7 +2304,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
     if (DEBUG_FETCH) std::cout << "   Read entryset " << from << "\n";
 
-    uint64_t full_liberties = full_column_[full_index_].liberties;
+    uint64_t full_liberties = full_liberties_;
     if (full_liberties) {
         if (full_liberties + args.old_min > offset_ +2)
             full_liberties = full_liberties + args.old_min - (offset_ +2);
@@ -2318,7 +2318,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         if (liberties <= full_liberties) {
             liberties += entry.nr_empty(index_mask);
             if (liberties < full_liberties) continue;
-            if (liberties == full_liberties && !equal(entry, full_column_[full_index_].entry))
+            if (liberties == full_liberties && !equal(entry, full_entry_))
                 continue;
         }
         entry.liberties_subtract(args.old_min);
@@ -2755,10 +2755,6 @@ int CountLiberties::run_round(int x, int pos) {
     int filter = x < target_width() ? filter_[x].at(pos) :  0;
     int record = x < target_width() ? record_map_[x].at(pos) : -1;
 
-    full_index_ = x * height() + pos;
-    if (full_index_ >= full_column_.size())
-        full_column_.resize(full_index_+1);
-
     // Turn off injection for column positions >= 3
     // (counting from 1, x counts from 0, so the test is x >= 2)
     // It's easy to prove that if there is a solution where the first stone is
@@ -2970,22 +2966,6 @@ int CountLiberties::run_round(int x, int pos) {
         std::cout << std::flush;
 
 
-    // Find the number of liberties of the fully connected colum (if any)
-    full_index_ = x * height() + pos + 1;
-    if (full_index_ >= full_column_.size()) {
-        full_column_.resize(full_index_+1);
-        size_t full_index = nr_classes()-1;
-        auto full_mask  = index_masks_[full_index];
-        for (auto const& entry: entries_[full_index]) {
-            // If there are bumps the column can be disconnected
-            if (!multichain(entry, full_mask)) {
-                full_column_[full_index_].entry = entry;
-                full_column_[full_index_].liberties = entry.liberties() + (offset_+2);
-                break;
-            }
-        }
-    }
-
     new_round();
 
     return pos_left;
@@ -3051,6 +3031,20 @@ void CountLiberties::new_round() {
     // if (new_max_ == 0)
     //    fatal("No maximum");
 
+    // Find the number of liberties of the fully connected colum (if any)
+    size_t full_index = nr_classes()-1;
+    auto full_mask  = index_masks_[full_index];
+    for (auto const& entry: entries_[full_index]) {
+        // If there are bumps the column can be disconnected
+        if (!multichain(entry, full_mask)) {
+            full_entry_     = entry;
+            // +2 makes sure full_liberties > 0 even if real liberties == 0
+            // so we can distinguish it from when no full entry exists
+            full_liberties_ = entry.liberties() + (offset_+2);
+            break;
+        }
+    }
+
     if (new_min_ == MAX_LIBERTIES)
         fatal("minimum is still maxed out. Probably means no entries");
     if (new_min_ <= 0)
@@ -3096,6 +3090,7 @@ void CountLiberties::clear() {
     new_real_max_ = 0;
     max_real_max_ = 0;
     new_min_ = MAX_LIBERTIES;
+    full_liberties_ = 0;
 
     Entry entry;
     entry.clear(-offset_);
@@ -3141,7 +3136,6 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     height_{height},
     nr_classes_{1 << height_},
     threads_{nr_threads, save_thread},
-    full_index_{0},
     max_entries_{0}
 {
     // std::cout << "height=" << height_ << "\n";
