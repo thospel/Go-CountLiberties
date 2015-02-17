@@ -2221,7 +2221,7 @@ void CountLiberties::process_asym(int direction, Args const args, ThreadData& th
 // Add a bump in the given direction (0 combines two bumps to a flat column)
 // Apply symmetry at the end (except when going down, direction > 0)
 ALWAYS_INLINE
-void CountLiberties::_process(bool inject, int direction, Args const args,
+void CountLiberties::_process(bool inject, int direction, Args args,
                               uint from, bool left_black,
                               ThreadData& thread_data) {
 #if NDEBUG
@@ -2252,6 +2252,11 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
             Entry::_stone_mask(pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
             args.pos ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) : 0;
         // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
+        // Test should be against (from & 0x2), but args.index0 has the same bit
+        if (false && direction > 0 && left_black && args.pos == 0 && (args.index0 & 0x2)) {
+            // std::cout << "Hit up" << std::endl;
+            args.filter = -1;
+        }
     }
 
     // Short circuit the test. compiler dead code elimination will do it for us
@@ -2269,6 +2274,10 @@ void CountLiberties::_process(bool inject, int direction, Args const args,
             args.pos < EXPANDED_SIZE-1 ?
                        Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
+        if (false && direction < 0 && left_black && args.pos == height()-1 && (from >> (args.pos-1) & 1)) {
+            // std::cout << "Hit down" << std::endl;
+            args.filter = -1;
+        }
     }
 
     // Short circuit the test. compiler dead code elimination will do it for us

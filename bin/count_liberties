@@ -272,7 +272,20 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         $height < 2 ? (1) x ($height * $height) :
         ((0) x $height, (1) x ($height * ($height-2)), (0) x $height);
 
-    my @best_filter = map [], 1..$height;
+    my @best_filter;
+    # Never put black in a corner except if a side <= 2 and even then we
+    # can exclude the corners on one side (except again in 1x1)
+    for my $target_width (1..$height) {
+        push @best_filter, [];
+        next if $height == 1;
+        push @{$best_filter[-1]}, [0, 0, -1];
+        # Notice that the next line is the [0, $height-1] corner
+        push @{$best_filter[-1]}, [0, 1, -1] if $height >= 3;
+        #next if $target_width == 1;
+        #push @{$best_filter[-1]}, [$target_width-1, 0, -1];
+        #push @{$best_filter[-1]}, [$target_width-1, 1, -1] if
+        #    $height >= 3;
+    }
     while (my $target_width = @best_filter) {
         my $solution_start      = time;
         my $solution_user_start = times;
@@ -300,6 +313,11 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
             printf("Going for %dx%d, already know %d bits%s\n",
                    $target_width, $height, $target_width*$height-$need,
                    $need ? sprintf(", still need %d bit%s", $need, $need == 1 ? "" : "s") : "") if $sweep != 0 && !$quiet;
+        } else {
+            for my $f (@{$best_filter[-1]}) {
+                my ($x0, $y0, $bit) = @$f;
+                $counter->filter($x0, $y0, $bit);
+            }
         }
 
         while ($solution || $sweep == 0) {
