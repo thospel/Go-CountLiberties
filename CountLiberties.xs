@@ -1038,6 +1038,11 @@ class CountLiberties {
         int x_, y_;
     };
 
+    struct FullEntry {
+        Entry entry;
+        uint64_t liberties = 0;
+    };
+
     static size_t get_memory() HOT;
 
     CountLiberties(int height, uint nr_threads = 1, bool save_thread = true);
@@ -1062,7 +1067,7 @@ class CountLiberties {
     uint64_t signature() HOT;
     auto nr_classes() const { return nr_classes_; }
     auto nr_keys(int i) const {
-        // std::cout << "    nr_keys(" << i << ")=" << old_[i].size() << "\n";
+        // std::cout << "    nr_keys(" << i << ")=" << entries_[i].size() << "\n";
         return entries_[i].size();
     }
     auto nr_keys() const {
@@ -1196,6 +1201,8 @@ class CountLiberties {
     std::vector<std::vector<int>> record_map_;
     std::vector<double> cost_;
     std::vector<Coordinate> record_;
+    std::vector<FullEntry> full_column_;
+    size_t full_index_;
     Entry max_entry_;
     int offset_;		// Current Liberty renormalization
     int max_index_;
@@ -1206,8 +1213,6 @@ class CountLiberties {
     uint new_max_;
     // Used to renormalize the liberty counts so we don't overflow Liberty
     uint64_t old_min_;
-    uint64_t full_libs_;
-    Entry full_entry_;
     uint new_min_;
     uint filter_need_;
     int target_width_;
@@ -2299,14 +2304,22 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
     if (DEBUG_FETCH) std::cout << "   Read entryset " << from << "\n";
 
+    uint64_t full_liberties = full_column_[full_index_].liberties;
+    if (full_liberties) {
+        if (full_liberties + args.old_min > offset_ +2)
+            full_liberties = full_liberties + args.old_min - (offset_ +2);
+        else
+            full_liberties = 0;
+    }
     // std::cout << "\tentries " << from << " size " << entries_[inject ? nr_classes() : from].size() << "\n";
     for (auto entry: entries_[inject ? nr_classes() : from]) {
         if (DEBUG_FETCH) std::cout << "      Entry: " << entry.raw_column_string() << ", raw libs=" << static_cast<uint>(entry.liberties()) << "\n";
         auto liberties = entry.liberties();
-        if (liberties <= full_libs_) {
+        if (liberties <= full_liberties) {
             liberties += entry.nr_empty(index_mask);
-            if (liberties < full_libs_) continue;
-            if (liberties == full_libs_ && !equal(entry, full_entry_)) continue;
+            if (liberties < full_liberties) continue;
+            if (liberties == full_liberties && !equal(entry, full_column_[full_index_].entry))
+                continue;
         }
         entry.liberties_subtract(args.old_min);
         if (DEBUG_FLOW) {
@@ -2742,6 +2755,10 @@ int CountLiberties::run_round(int x, int pos) {
     int filter = x < target_width() ? filter_[x].at(pos) :  0;
     int record = x < target_width() ? record_map_[x].at(pos) : -1;
 
+    full_index_ = x * height() + pos;
+    if (full_index_ >= full_column_.size())
+        full_column_.resize(full_index_+1);
+
     // Turn off injection for column positions >= 3
     // (counting from 1, x counts from 0, so the test is x >= 2)
     // It's easy to prove that if there is a solution where the first stone is
@@ -2799,7 +2816,7 @@ int CountLiberties::run_round(int x, int pos) {
             }
         }
         int limit = max_entries_;
-        limit &= ~bits;
+        if (limit & bits) limit = (limit & ~bits) | (bits-1);
         for (int j=1; j<=limit; ++j) {
             if (j & bits) continue;
             auto size = nr_keys(j) + nr_keys(j + bits);
@@ -2828,9 +2845,12 @@ int CountLiberties::run_round(int x, int pos) {
         if (final) {
             if (bits == rbits)
                 threads_.call_sym_final(pos_left);
-            else
+            else {
+                assert(bits > rbits);
                 threads_.call_asym_final(pos_left);
+            }
         } else {
+            assert(bits > rbits);
             threads_.call_up(pos_left);
         }
 
@@ -2855,7 +2875,8 @@ int CountLiberties::run_round(int x, int pos) {
             }
         }
         int limit = max_entries_;
-        limit &= ~cbits;
+        if (limit & bits)  limit = (limit & ~ bits) |  (bits-1);
+        if (limit & rbits) limit = (limit & ~rbits) | (rbits-1);
         for (int j=1; j<=limit; ++j) {
             if (j & cbits) continue;
             int rj = reverse_bits[j];
@@ -2948,6 +2969,23 @@ int CountLiberties::run_round(int x, int pos) {
     if (DEBUG_FLOW || DEBUG_STORE || DEBUG_FETCH || DEBUG_THREAD)
         std::cout << std::flush;
 
+
+    // Find the number of liberties of the fully connected colum (if any)
+    full_index_ = x * height() + pos + 1;
+    if (full_index_ >= full_column_.size()) {
+        full_column_.resize(full_index_+1);
+        size_t full_index = nr_classes()-1;
+        auto full_mask  = index_masks_[full_index];
+        for (auto const& entry: entries_[full_index]) {
+            // If there are bumps the column can be disconnected
+            if (!multichain(entry, full_mask)) {
+                full_column_[full_index_].entry = entry;
+                full_column_[full_index_].liberties = entry.liberties() + (offset_+2);
+                break;
+            }
+        }
+    }
+
     new_round();
 
     return pos_left;
@@ -3013,19 +3051,6 @@ void CountLiberties::new_round() {
     // if (new_max_ == 0)
     //    fatal("No maximum");
 
-    // Find the number of liberties of the fully connected colum (if any)
-    full_libs_ = 0;
-    uint full_index = nr_classes()-1;
-    auto full_mask  = index_masks_[full_index];
-    for (auto const& entry: entries_[full_index]) {
-        // If there are bumps the column can be disconnected
-        if (!multichain(entry, full_mask)) {
-            full_libs_ = entry.liberties();
-            full_entry_ = entry;
-            break;
-        }
-    }
-
     if (new_min_ == MAX_LIBERTIES)
         fatal("minimum is still maxed out. Probably means no entries");
     if (new_min_ <= 0)
@@ -3061,6 +3086,10 @@ void CountLiberties::clear() {
     // Notice we do NOT clear the filter since we probably want to run again
     // using the new filter bits. To clear the filter call clear_filter()
 
+    // We also do NOT clear the full_column_ vector since with the extra filter
+    // the full column can have less liberties than the real full column without
+    // filtering. This could then start pruning real solutions
+
     offset_   = -1;
     new_max_  =  0;
     old_min_  =  0;
@@ -3091,7 +3120,6 @@ void CountLiberties::clear() {
         // no need to initialize most old_ variables. new_round() will set them
         new_round();
     } else {
-        full_libs_ = 0;
         old_max_  = 0;
         old_real_max_ = 0;
     }
@@ -3113,6 +3141,7 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     height_{height},
     nr_classes_{1 << height_},
     threads_{nr_threads, save_thread},
+    full_index_{0},
     max_entries_{0}
 {
     // std::cout << "height=" << height_ << "\n";
