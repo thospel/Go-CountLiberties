@@ -302,8 +302,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         $counter->target_width($target_width);
         my (@try_filter, @maximum_column, @good_filter);
         # my $unknown = -1;
-        my $unknown = 0;
-        # my $unknown = $target_width;
+        # my $unknown = 0;
+        my $unknown = $target_width;
         if ($solution) {
             if ($cost_type) {
                 for my $i (0..$target_width*$height-1) {
@@ -360,7 +360,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                     if ($x > $target_width) {
                         $counter->run_round($x - 1, $y - 1);
                     } else {
-                        printf("-- [%2d,%2d] %2d, %2d\n",
+                        printf("-- [%2d,%2d] F %2d, R %2d\n",
                                $x, $y,
                                $counter->filter($x-1, $y-1),
                                $counter->record_map($x-1, $y-1)) if $debug_history;
@@ -442,10 +442,10 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                         }
                         $try_filter[$x-1] = \@collect;
                     } elsif ($debug_history) {
-                        print("best_filter=", $best_filter[$x-1] ? 1 : 0,
-                              ", solution=", $counter->no_solution ? 0 : 1,
-                              ", max should be $max[$x-1] and is ",
-                              $counter->maximum, "\n");
+                        printf("Level[%2d]: best_filter=%d, solution=%d, max should be %d and is %d\n",
+                               $x, $best_filter[$x-1] ? 1 : 0,
+                               $counter->no_solution ? 0 : 1,
+                               $max[$x-1], $counter->maximum);
                     }
                 }
 

@@ -14466,9 +14466,6 @@ Solution 1x21: 2 liberties (8 * 0.0s user, 0.3s real)
 *.*
 ***
  Generated all boards with heighth 21: (8 * 7533.5s user, 8628.7s real)
-monotone revision 3a2c2eab5c9b2baf85a187b427f82d51abcf2e18, parent ed25cd7eccb62a8db6fcb079904746ac6dd4f735
-Height = 22, 22x22 will be in [309, 323], 8 threads
-new: Height 22 is bigger than 20 at /home/ton/perl-modules/Go-CountLiberties/bin/count_liberties line 258.
 monotone revision 5f8428e4b0578ce71c75fc4633123709738d616c, parent ed25cd7eccb62a8db6fcb079904746ac6dd4f735
 Height = 22, 22x22 will be in [309, 323], 8 threads
  width  1:   2 (   1.1 s,   2098176 columns, B3C48296DC1BF52C sig,   375876 KiB)

@@ -954,7 +954,7 @@ class CountLiberties {
             operation_ = FINISH;
         }
         uint execute(CountLiberties* count_liberties, uint ttop) {
-            if (ttop == 0) fatal("No work to start");
+            if (ttop == 0) fatal("No work to start (operation " + std::to_string(operation_) + ")");
             uint threads = ttop < nr_threads() ? ttop : nr_threads();
             work_prepare();
             threads_left_ = threads;
@@ -1911,7 +1911,7 @@ auto CountLiberties::signature() -> uint64_t {
 
     uint max = nr_keys(0);
     auto* sizes = &sizes_[0];
-    for (int i=0; i<nr_classes(); ++i) {
+    for (int i = 0; i <= max_entries_; ++i) {
         auto size = nr_keys(i);
         if (size > 0) {
             sizes->index = i;
@@ -1928,35 +1928,37 @@ auto CountLiberties::signature() -> uint64_t {
         }
     }
 
-    // Process counting results to get a sorted list
-    ++max;
-    // if (max > max_max) max_max = max;
-    // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
-    uint accu = 0;
-    for (uint i=0; i < max; ++i) {
-        auto tmp = indices0[i];
-        indices0[i] = accu;
-        accu += tmp;
-    }
-    auto* indices  = &indices_[0];
-    for (auto s = &sizes_[0]; s < sizes; ++s)
-        indices[indices0[s->size]++] = s->index;
-    std::memset(indices0, 0, max*sizeof(indices0[0]));
-
-    int ttop = sizes - &sizes_[0];
-    if (0) {
-        std::cout << "Signature=" << ttop << "non zero buckets\n";
-        for (int i=0; i<ttop; ++i) {
-            std::cout << "    index " << indices[i] << ": size " << nr_keys(i) << "\n";
-        }
-    }
-
-    threads_.execute(this, ttop);
-
     uint64_t signature = 0;
-    for (auto const& thread_data: threads_)
-        signature += thread_data.result;
 
+    if (max) {
+        // Process counting results to get a sorted list
+        ++max;
+        // if (max > max_max) max_max = max;
+        // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
+        uint accu = 0;
+        for (uint i=0; i < max; ++i) {
+            auto tmp = indices0[i];
+            indices0[i] = accu;
+            accu += tmp;
+        }
+        auto* indices  = &indices_[0];
+        for (auto s = &sizes_[0]; s < sizes; ++s)
+            indices[indices0[s->size]++] = s->index;
+        std::memset(indices0, 0, max*sizeof(indices0[0]));
+
+        int ttop = sizes - &sizes_[0];
+        if (0) {
+            std::cout << "Signature=" << ttop << "non zero buckets\n";
+            for (int i=0; i<ttop; ++i) {
+                std::cout << "    index " << indices[i] << ": size " << nr_keys(i) << "\n";
+            }
+        }
+
+        threads_.execute(this, ttop);
+
+        for (auto const& thread_data: threads_)
+            signature += thread_data.result;
+    }
     // std::cout << "-> Sig " << signature << "\n";
     return signature;
 }
