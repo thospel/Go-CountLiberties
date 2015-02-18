@@ -302,8 +302,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         $counter->target_width($target_width);
         my (@try_filter, @maximum_column, @good_filter);
         # my $unknown = -1;
-        # my $unknown = 0;
-        my $unknown = $target_width;
+        my $unknown = 0;
+        # my $unknown = $target_width;
         if ($solution) {
             if ($cost_type) {
                 for my $i (0..$target_width*$height-1) {

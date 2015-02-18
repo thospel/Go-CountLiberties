@@ -1206,8 +1206,8 @@ class CountLiberties {
     std::vector<std::vector<int>> record_map_;
     std::vector<double> cost_;
     std::vector<Coordinate> record_;
-    uint64_t full_liberties_;
-    Entry full_entry_;
+    std::vector<FullEntry> full_column_;
+    FullEntry current_full_column_;
     Entry max_entry_;
     int offset_;		// Current Liberty renormalization
     int max_index_;
@@ -2311,7 +2311,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
     if (DEBUG_FETCH) std::cout << "   Read entryset " << from << "\n";
 
-    uint64_t full_liberties = full_liberties_;
+    uint64_t full_liberties = current_full_column_.liberties;
     if (full_liberties) {
         if (full_liberties + args.old_min > offset_ +2)
             full_liberties = full_liberties + args.old_min - (offset_ +2);
@@ -2325,7 +2325,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         if (liberties <= full_liberties) {
             liberties += entry.nr_empty(index_mask);
             if (liberties < full_liberties) continue;
-            if (liberties == full_liberties && !equal(entry, full_entry_))
+            if (liberties == full_liberties && !equal(entry, current_full_column_.entry))
                 continue;
         }
         entry.liberties_subtract(args.old_min);
@@ -2965,13 +2965,33 @@ int CountLiberties::run_round(int x, int pos) {
         max_entry_ = threads_[t_max].max_entry;
     }
 
+    // Find the number of liberties of the fully connected colum (if any)
+    current_full_column_.liberties = 0;
+    size_t full_index = nr_classes()-1;
+    auto full_mask  = index_masks_[full_index];
+    for (auto const& entry: entries_[full_index]) {
+        // If there are bumps the column can be disconnected
+        if (!multichain(entry, full_mask)) {
+            current_full_column_.entry = entry;
+            // +2 makes sure full_liberties > 0 even if real liberties == 0
+            // so we can distinguish it from when no full entry exists
+            current_full_column_.liberties = entry.liberties() + (offset_+2);
+            break;
+        }
+    }
+    size_t vertex = x * height() + pos;
+    if (vertex >= full_column_.size()) {
+        full_column_.resize(vertex);
+        full_column_.emplace_back(current_full_column_);
+    } else if (full_column_[vertex].liberties > current_full_column_.liberties)
+        current_full_column_ = full_column_[vertex];
+
     if (DEBUG_FLOW) {
         std::cout << "   Final maximum " << new_max_ + offset_ << " for '" << column_string(max_entry_, max_index_) << " (" << max_entry_.history_bitstring() << ")\n";
     }
 
     if (DEBUG_FLOW || DEBUG_STORE || DEBUG_FETCH || DEBUG_THREAD)
         std::cout << std::flush;
-
 
     new_round();
 
@@ -3038,20 +3058,6 @@ void CountLiberties::new_round() {
     // if (new_max_ == 0)
     //    fatal("No maximum");
 
-    // Find the number of liberties of the fully connected colum (if any)
-    size_t full_index = nr_classes()-1;
-    auto full_mask  = index_masks_[full_index];
-    for (auto const& entry: entries_[full_index]) {
-        // If there are bumps the column can be disconnected
-        if (!multichain(entry, full_mask)) {
-            full_entry_     = entry;
-            // +2 makes sure full_liberties > 0 even if real liberties == 0
-            // so we can distinguish it from when no full entry exists
-            full_liberties_ = entry.liberties() + (offset_+2);
-            break;
-        }
-    }
-
     if (new_min_ == MAX_LIBERTIES)
         fatal("minimum is still maxed out. Probably means no entries");
     if (new_min_ <= 0)
@@ -3097,7 +3103,7 @@ void CountLiberties::clear() {
     new_real_max_ = 0;
     max_real_max_ = 0;
     new_min_ = MAX_LIBERTIES;
-    full_liberties_ = 0;
+    current_full_column_.liberties = 0;
 
     Entry entry;
     entry.clear(-offset_);
