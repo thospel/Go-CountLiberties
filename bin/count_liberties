@@ -59,6 +59,7 @@ die "Could not parse your command line. Try $0 -h\n" unless
                "generalize!"	=> \$signatures,
                "dump!"		=> \my $dump,
                "debug_history!"	=> \my $debug_history,
+               "history_bits=o" => \my $history_bits,
                "quiet"		=> \my $quiet,
                "version!"	=> \my $version,
                "U|unsafe!"	=> \my $unsafe,
@@ -140,27 +141,29 @@ if ($restart) {
         }
     }
 
-    my @profiler = qw(libprofiler.so);
-    my $profiler;
-  PROFILER:
-    for my $p (@profiler) {
-        for my $l (@libs) {
-            if (-f "$l/$p") {
-                $profiler = "$l/$p";
-                last PROFILER;
+    if (defined $profile) {
+        my @profiler = qw(libprofiler.so);
+        my $profiler;
+      PROFILER:
+        for my $p (@profiler) {
+            for my $l (@libs) {
+                if (-f "$l/$p") {
+                    $profiler = "$l/$p";
+                    last PROFILER;
+                }
             }
         }
-    }
-    if ($profiler) {
-        $restart = 1;
-        $ENV{LD_PRELOAD} = $ENV{LD_PRELOAD} ?
-            "$profiler $ENV{LD_PRELOAD}" : $profiler;
-        if (defined $profile) {
-            $profile = "$Script.pprof" if $profile eq "";
-            $ENV{CPUPROFILE}=$profile;
+        if ($profiler) {
+            $restart = 1;
+            $ENV{LD_PRELOAD} = $ENV{LD_PRELOAD} ?
+                "$profiler $ENV{LD_PRELOAD}" : $profiler;
+            if (defined $profile) {
+                $profile = "$Script.pprof" if $profile eq "";
+                $ENV{CPUPROFILE}=$profile;
+            }
+        } else {
+            warn("Could not find any of @profiler in any of @libs. Will turn off the profiling option\n");
         }
-    } else {
-        warn("Could not find any of @profiler in any of @libs. Will turn off the profiling option\n");
     }
 
     if (defined $nice) {
@@ -235,8 +238,12 @@ sub nr_liberties {
     return $nr_liberties;
 }
 
-my $history_bits = Go::CountLiberties->history_bits ||
-    die "Assertion: No history bits";
+my $compiled_history_bits = Go::CountLiberties->history_bits ||
+    die "Assertion: No history bits compiled in";
+$history_bits = $compiled_history_bits if !defined $history_bits;
+$history_bits > 0 || die "history_bits must be > 0";
+$history_bits <= $compiled_history_bits || die "history_bits must be <= the compiled in value of $compiled_history_bits";
+
 if ($show_sizes) {
     printf "Counter: %6d bytes\n", Go::CountLiberties->countliberties_size();
     printf "EntrySet:%6d bytes\n", Go::CountLiberties->entry_set_size();
@@ -296,6 +303,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         my (@try_filter, @maximum_column, @good_filter);
         # my $unknown = -1;
         my $unknown = 0;
+        # my $unknown = $target_width;
         if ($solution) {
             if ($cost_type) {
                 for my $i (0..$target_width*$height-1) {
