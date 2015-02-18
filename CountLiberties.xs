@@ -2266,7 +2266,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
             args.pos ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) : 0;
         // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
         // Test should be against (from & 0x2), but args.index0 has the same bit
-        if (PRUNE_SIDES && direction > 0 && left_black && args.pos == 0 && (args.index0 & 0x2)) {
+        if (PRUNE_SIDES && direction > 0 && left_black && args.pos == 0) {
             // std::cout << "Hit up" << std::endl;
             args.filter = -1;
         }
@@ -2287,7 +2287,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
             args.pos < EXPANDED_SIZE-1 ?
                        Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
-        if (PRUNE_SIDES && direction < 0 && left_black && args.pos == height()-1 && (from >> (args.pos-1) & 1)) {
+        if (PRUNE_SIDES && direction < 0 && left_black && args.pos == height()-1) {
             // std::cout << "Hit down" << std::endl;
             args.filter = -1;
         }
@@ -2966,7 +2966,13 @@ int CountLiberties::run_round(int x, int pos) {
     }
 
     // Find the number of liberties of the fully connected colum (if any)
-    current_full_column_.liberties = 0;
+    // current_full_column_.liberties = 0;
+    // In principle we should set current_full_column_.liberties 0 in case there
+    // is no full column. But the PRUNE_SIDES option will quite often prune
+    // a bumpy full column. Still, without the pruning we would get a full
+    // column at least as good as the previous one. So instead just keep the
+    // last liberties limit and set an invalid placeholder
+    current_full_column_.entry = Entry::invalid();
     size_t full_index = nr_classes()-1;
     auto full_mask  = index_masks_[full_index];
     for (auto const& entry: entries_[full_index]) {
@@ -2979,6 +2985,7 @@ int CountLiberties::run_round(int x, int pos) {
             break;
         }
     }
+    // std::cout << "full liberties=" << current_full_column_.liberties << std::endl;
     size_t vertex = x * height() + pos;
     if (vertex >= full_column_.size()) {
         full_column_.resize(vertex);
