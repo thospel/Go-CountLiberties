@@ -2266,7 +2266,8 @@ void CountLiberties::_process(bool inject, int direction, Args args,
             args.pos ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) : 0;
         // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
         // Test should be against (from & 0x2), but args.index0 has the same bit
-        if (PRUNE_SIDES && direction > 0 && left_black && args.pos == 0) {
+        // Need height != 2 otherwise the reverses make both sides impossible
+        if (PRUNE_SIDES && direction > 0 && left_black && args.pos == 0 && height() != 2) {
             // std::cout << "Hit up" << std::endl;
             args.filter = -1;
         }
@@ -2287,7 +2288,8 @@ void CountLiberties::_process(bool inject, int direction, Args args,
             args.pos < EXPANDED_SIZE-1 ?
                        Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
-        if (PRUNE_SIDES && direction < 0 && left_black && args.pos == height()-1) {
+        // Need height != 2 otherwise the reverses make both sides impossible
+        if (PRUNE_SIDES && direction < 0 && left_black && args.pos == height()-1 && height() !=2) {
             // std::cout << "Hit down" << std::endl;
             args.filter = -1;
         }
