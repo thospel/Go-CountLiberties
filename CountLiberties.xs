@@ -2107,7 +2107,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     } else {
         Entry full = Entry::full(index_mask);
         auto found_full = backbone_set.find(full, index_mask);
-        uint64_t full_liberties;
+        uint64_t full_liberties = 0;
         if (found_full)
             full_liberties = found_full->entry.liberties();
 
@@ -2120,12 +2120,10 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
             //        ", Bacbone: " << column_string(backbone, index) <<
             //        " (raw liberties=" << backbone.liberties() << ")\n";
 
-            if (found_full) {
-                if (liberties <= full_liberties) {
+            if (liberties <= full_liberties) {
                 uint64_t nr_empty = entry.nr_empty(index_mask, found_full->entry);
                 if (liberties + nr_empty <= full_liberties &&
                     !equal(entry, found_full->entry)) continue;
-                }
             }
 
             auto found = backbone_set.find(entry, index_mask);
