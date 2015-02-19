@@ -442,7 +442,46 @@ class CountLiberties {
             temp._column(base << shift64);
             return temp;
         }
-
+        static int clz(auto x) {
+#ifdef __GNUC__
+            if (sizeof(size_type) == sizeof(unsigned int))
+                return __builtin_clz(x);
+            if (sizeof(size_type) == sizeof(unsigned long))
+                return __builtin_clzl(x);
+            if (sizeof(size_type) == sizeof(unsigned long long))
+                return __builtin_clzll(x);
+#endif /* __GNUC__ */
+            // Here we assume x < 2**32 which is ok for realistic EntrySets
+            int r = sizeof(x) * 8 - 1;
+            if (x & 0xFFFF0000) {
+                x >>= 16;
+                r -= 16;
+            }
+            if (x & 0xFF00) {
+                x >>= 8;
+                r -= 8;
+            }
+            if (x & 0xF0) {
+                x >>= 4;
+                r -= 4;
+            }
+            if (x & 0xC) {
+                x >>= 2;
+                r -= 2;
+            }
+            if (x & 0x2) {
+                // x >>= 1;
+                r -= 1;
+            }
+            return r;
+        }
+        static Entry full(uint64_t index_mask) {
+            index_mask &= (UINT64_C(-1) >> 1) >> clz(index_mask);
+            index_mask &= index_mask - 1;
+            Entry result;
+            result._column(index_mask);
+            return result;
+        }
       private:
         static uint64_t const liberty_mask = UINT64_C(0xff);
         static uint64_t const history_mask = UINT64_C(-1) >> 8*(COMPRESSED_SIZE+1) << 8;
@@ -575,39 +614,7 @@ class CountLiberties {
         }
         auto size()  const { return size_; }
         auto empty() const { return size_ == 0; }
-        static int clz(auto x) {
-#ifdef __GNUC__
-            if (sizeof(size_type) == sizeof(unsigned int))
-                return __builtin_clz(x);
-            if (sizeof(size_type) == sizeof(unsigned long))
-                return __builtin_clzl(x);
-            if (sizeof(size_type) == sizeof(unsigned long long))
-                return __builtin_clzll(x);
-#endif /* __GNUC__ */
-            // Here we assume x < 2**32 which is ok for realistic EntrySets
-            int r = sizeof(x) * 8 - 1;
-            if (x & 0xFFFF0000) {
-                x >>= 16;
-                r -= 16;
-            }
-            if (x & 0xFF00) {
-                x >>= 8;
-                r -= 8;
-            }
-            if (x & 0xF0) {
-                x >>= 4;
-                r -= 4;
-            }
-            if (x & 0xC) {
-                x >>= 2;
-                r -= 2;
-            }
-            if (x & 0x2) {
-                // x >>= 1;
-                r -= 1;
-            }
-            return r;
-        }
+        static int clz(auto x) { return Entry::clz(x); }
         void reserve(size_type elements) {
             // Most reserves are for size 0
             // Ignoring size 0, most reserves end up at 1 << (height()+1)/2
@@ -2069,6 +2076,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     uint64_t new_max = thread_data.new_max;
     if (backbone_set.size() == entries.size()) {
         // If the sizes are equal no pruning can happen
+        // (actually we miss out on found_full pruning)
         for (auto const entry: entries) {
             uint64_t liberties{entry.liberties()};
 
@@ -2097,6 +2105,12 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
                     liberties << ")\n";
         }
     } else {
+        Entry full = Entry::full(index_mask);
+        auto found_full = backbone_set.find(full, index_mask);
+        uint64_t full_liberties;
+        if (found_full)
+            full_liberties = found_full->entry.liberties();
+
         size_t nr_entries = 0;
         for (auto const entry: entries) {
             uint64_t liberties{entry.liberties()};
@@ -2105,6 +2119,14 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
             //        "O Entry: "     << column_string(entry,    index) <<
             //        ", Bacbone: " << column_string(backbone, index) <<
             //        " (raw liberties=" << backbone.liberties() << ")\n";
+
+            if (found_full) {
+                if (liberties <= full_liberties) {
+                uint64_t nr_empty = entry.nr_empty(index_mask, found_full->entry);
+                if (liberties + nr_empty <= full_liberties &&
+                    !equal(entry, found_full->entry)) continue;
+                }
+            }
 
             auto found = backbone_set.find(entry, index_mask);
             // Interesting. Doing this test makes the program marginally faster
