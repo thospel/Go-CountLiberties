@@ -280,10 +280,12 @@ class CountLiberties {
             value_ = liberties;
         }
         auto any_empty(uint64_t index_mask, uint64_t mask = 0, uint shift = shift64) const -> bool;
+        // Are there ane EMPTY (NOT LIBERTY) vertices that are not EMPTY in mask
         auto any_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> bool {
             return any_empty(index_mask, mask._column(), shift);
         }
         auto nr_empty(uint64_t index_mask, uint64_t mask = 0, uint shift = shift64) const -> uint;
+        // The number of EMPTY (NOT LIBERTY) vertices that are not EMPTY in mask
         auto nr_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> uint {
             return nr_empty(index_mask, mask._column(), shift);
         }
@@ -2071,14 +2073,29 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     }
     // std::cout << "backbone size=" << backbone_set.size() << "\n";
 
+    Entry full = Entry::full(index_mask);
+    auto found_full = backbone_set.find(full, index_mask);
+    uint64_t full_liberties = 0;
+    if (found_full) {
+        full = found_full->entry;
+        full_liberties = full.liberties();
+    }
+    size_t nr_entries = 0;
+
     // The program logic ensures that entries is already cleared and shrunk
     uint64_t new_min = thread_data.new_min;
     uint64_t new_max = thread_data.new_max;
     if (backbone_set.size() == entries.size()) {
-        // If the sizes are equal no pruning can happen
-        // (actually we miss out on found_full pruning)
+        // If the sizes are equal no backbone pruning can happen
+        // But we can still get full based pruning
         for (auto const entry: entries) {
             uint64_t liberties{entry.liberties()};
+
+            if (liberties <= full_liberties) {
+                uint64_t nr_empty = entry.nr_empty(index_mask, full);
+                if (liberties + nr_empty <= full_liberties &&
+                    !equal(entry, full)) continue;
+            }
 
             if (liberties < new_min) new_min = liberties;
             // std::cout << "           New\n";
@@ -2103,17 +2120,9 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
                     " " << entry.raw_column_string() << " (" <<
                     entry.history_bitstring() << ", raw libs=" <<
                     liberties << ")\n";
+            entries[nr_entries++] = entry;
         }
     } else {
-        Entry full = Entry::full(index_mask);
-        auto found_full = backbone_set.find(full, index_mask);
-        uint64_t full_liberties = 0;
-        if (found_full) {
-            full = found_full->entry;
-            full_liberties = full.liberties();
-        }
-
-        size_t nr_entries = 0;
         for (auto const entry: entries) {
             uint64_t liberties{entry.liberties()};
             //if (0)
@@ -2170,8 +2179,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
                     liberties << ")\n";
             entries[nr_entries++] = entry;
         }
-        entries.resize(nr_entries);
     }
+    entries.resize(nr_entries);
     entries.shrink_to_fit();
     thread_data.new_min = new_min;
     if (index > thread_data.max_entries) thread_data.max_entries = index;
