@@ -245,6 +245,7 @@ $history_bits > 0 || die "history_bits must be > 0";
 $history_bits <= $compiled_history_bits || die "history_bits must be <= the compiled in value of $compiled_history_bits";
 
 if ($show_sizes) {
+    printf "Vector: %7d bytes\n", Go::CountLiberties->vector_size();
     printf "Counter: %6d bytes\n", Go::CountLiberties->countliberties_size();
     printf "EntrySet:%6d bytes\n", Go::CountLiberties->entry_set_size();
     printf "ThreadData:%4d bytes\n", Go::CountLiberties->thread_data_size();
@@ -642,7 +643,7 @@ n=3 (proven)
   General rule:
     2m
 
-n>=4 (proven for n<=21)
+n>=4 (proven for n<=22)
  n=0 (mod 3)
    Examples:
    ***********   ***********   ***********   **************

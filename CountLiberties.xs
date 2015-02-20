@@ -132,6 +132,44 @@ NOINLINE void fatal(std::string message) {
     }
 }
 
+// Only call on unsigned types or be sure that the top it is not set
+ALWAYS_INLINE int clz(auto x) {
+#ifdef __GNUC__
+    if (sizeof(x) == sizeof(unsigned int))
+        return __builtin_clz(x);
+    if (sizeof(x) == sizeof(unsigned long))
+        return __builtin_clzl(x);
+    if (sizeof(x) == sizeof(unsigned long long))
+        return __builtin_clzll(x);
+#endif /* __GNUC__ */
+    int r = sizeof(x) * 8 - 1;
+    if (x >> 32) {
+        x >>= 32;
+        r -= 32;
+    }
+    if (x >> 16) {
+        x >>= 16;
+        r -= 16;
+    }
+    if (x >> 8) {
+        x >>= 8;
+        r -= 8;
+    }
+    if (x >> 4) {
+        x >>= 4;
+        r -= 4;
+    }
+    if (x >> 2) {
+        x >>= 2;
+        r -= 2;
+    }
+    if (x >> 1) {
+        // x >>= 1;
+        r -= 1;
+    }
+    return r;
+}
+
 class CountLiberties {
   public:
     typedef uint8_t Liberties;
@@ -444,39 +482,6 @@ class CountLiberties {
             temp._column(base << shift64);
             return temp;
         }
-        static int clz(auto x) {
-#ifdef __GNUC__
-            if (sizeof(size_type) == sizeof(unsigned int))
-                return __builtin_clz(x);
-            if (sizeof(size_type) == sizeof(unsigned long))
-                return __builtin_clzl(x);
-            if (sizeof(size_type) == sizeof(unsigned long long))
-                return __builtin_clzll(x);
-#endif /* __GNUC__ */
-            // Here we assume x < 2**32 which is ok for realistic EntrySets
-            int r = sizeof(x) * 8 - 1;
-            if (x & 0xFFFF0000) {
-                x >>= 16;
-                r -= 16;
-            }
-            if (x & 0xFF00) {
-                x >>= 8;
-                r -= 8;
-            }
-            if (x & 0xF0) {
-                x >>= 4;
-                r -= 4;
-            }
-            if (x & 0xC) {
-                x >>= 2;
-                r -= 2;
-            }
-            if (x & 0x2) {
-                // x >>= 1;
-                r -= 1;
-            }
-            return r;
-        }
         static Entry full(uint64_t index_mask) {
             index_mask &= (UINT64_C(-1) >> 1) >> clz(index_mask);
             index_mask &= index_mask - 1;
@@ -569,17 +574,27 @@ class CountLiberties {
             value_type const* ptr_;
         };
 
+        auto size()  const { return size_; }
+        auto empty() const { return size_ == 0; }
+        auto used()  const { return mask_+1; }
+
         EntrySet():
-            used_{0},
+            arena_{nullptr},
             mask_{0},
-            size_{0},
-            max_load_multiplier_{1./DEFAULT_LOAD_FACTOR}
+            size_{0}
             {
                 value_type terminator;
                 terminator.entry._column(TERMINATOR);
-                arena_.resize(1, terminator);
             }
         ~EntrySet() {};
+        void alloc_arena(value_type* &ptr, size_t max) {
+            if (size_) fatal("Cannot alloc if not empty");
+            //  std::cout << "arena " << ptr << ", size " << max << "+1 value_types\n";
+            arena_ = ptr;
+            ptr += ((max+1) * sizeof(value_type) + _CACHE_LINE - 1) / _CACHE_LINE * _CACHE_LINE / sizeof(value_type);
+            std::memset(&arena_[0], UNSET8, (max+1) * sizeof(value_type));
+            mask_ = 0;
+        }
 
         // Make sure we don't copy a map by accident
         EntrySet(EntrySet const& map)  = delete;
@@ -598,11 +613,11 @@ class CountLiberties {
             const_iterator pos{&arena_[-1]};
             return ++pos;
         }
-        iterator	end()		{ return &arena_[used_]; }
-        const_iterator	end() const	{ return &arena_[used_]; }
+        iterator	end()		{ return &arena_[used()]; }
+        const_iterator	end() const	{ return &arena_[used()]; }
         void dump() const {
             std::cout << "dump " << (void*) this << " =";
-            for (size_type i=0; i < used_; ++i)
+            for (size_type i=0; i < used(); ++i)
                 std::cout << "\t" << arena_[i].entry._column();
             std::cout << "\n";
         }
@@ -610,19 +625,16 @@ class CountLiberties {
             // std::cout << "Clear " << (void*) this << "\n";
             // repeated UNSET8 leads to UNSET
             if (size_) {
-                std::memset(&arena_[0], UNSET8, used_ * sizeof(arena_[0]));
+                std::memset(&arena_[0], UNSET8, used() * sizeof(value_type));
                 size_ = 0;
             }
         }
-        auto size()  const { return size_; }
-        auto empty() const { return size_ == 0; }
-        static int clz(auto x) { return Entry::clz(x); }
-        void reserve(size_type elements) {
+        void reserve(size_type elements, float load_multiplier) {
             // Most reserves are for size 0
             // Ignoring size 0, most reserves end up at 1 << (height()+1)/2
             // std::cout << "Reserve " << (void*) this << ": " << elements << "\n";
             if (size_) fatal("reserve only supported on empty EntrySets");
-            size_type target = elements * max_load_multiplier_;
+            size_type target = elements * load_multiplier;
             if (target) {
                 --target;
                 // We must have at least 1 empty to prevent find() from looping
@@ -633,21 +645,18 @@ class CountLiberties {
                 target = (static_cast<size_type>(0) - 1) >> shift_;
                 shift_ += (sizeof(uint64_t) - sizeof(size_type)) * 8;
             }
-            ++target;
-            // std::cout << "Really Reserve " << target << "\n";
-            if (target == used_) return;
-            arena_[used_].entry._column(UNSET);
-            if (target >= arena_.size()) arena_.resize(target+1, arena_[used_]);
-            arena_[target].entry._column(TERMINATOR);
-            used_ = target;
-            mask_ = target - 1;
+            // std::cout << "Really Reserve " << target+1 << "\n";
+            if (target == mask_) return;
+            arena_[used()].entry._column(UNSET);
+            arena_[target+1].entry._column(TERMINATOR);
+            mask_ = target;
         }
         // Normally insert returns pair of iterator and bool
         // We return nullptr if the insert worked or the address on failure
         bool insert(Entry entry, value_type*& where) {
             assert(entry._column() != UNSET);
             assert(entry._column() != TERMINATOR);
-            // if (size_ >= used_ * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used_));
+            // if (size_ >= used() * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used()));
             // if (used_ <= 2) fatal("Insert while not enough reserved");
             size_type pos = entry.fast_hash(shift_);
             if (arena_[pos].unset()) {
@@ -685,8 +694,8 @@ class CountLiberties {
         bool insert(Entry entry, value_type*& where, uint64_t mask) {
             assert(entry._column() != UNSET);
             assert(entry._column() != TERMINATOR);
-            // if (size_ >= used_ * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used_));
-            // if (used_ <= 2) fatal("Insert while not enough reserved");
+            // if (size_ >= used() * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used()));
+            // if (used() <= 2) fatal("Insert while not enough reserved");
             uint64_t column = entry._column() & mask;
             size_type pos = Entry::_fast_hash(column, shift_);
             if (arena_[pos].unset()) {
@@ -778,19 +787,15 @@ class CountLiberties {
                 // if (add2 > 10) fatal("Too much looping");
             }
         }
-        float max_load_factor() const { return 1. / max_load_multiplier_; }
-        void max_load_factor(float max_load_factor) { max_load_multiplier_ = 1. / max_load_factor; }
       private:
         static constexpr uint8_t  UNSET8     = -1;
         static constexpr uint64_t UNSET      = -1;
         static constexpr uint64_t TERMINATOR =  0;
 
-        std::vector<value_type> arena_;
-        size_type used_;
+        value_type* arena_;
         size_type mask_;
         size_type size_;
         int shift_;
-        float max_load_multiplier_;
     };
 
     typedef EntrySet::size_type size_type;
@@ -830,6 +835,12 @@ class CountLiberties {
             work_mutex_.unlock();
         }
 #endif /* CONDITION_VARIABLE */
+        void alloc_arenas(EntrySet::value_type*& ptr, size_t max_map, size_t max_backbone) {
+            maps_[0].alloc_arena(ptr, max_map);
+            maps_[1].alloc_arena(ptr, max_map);
+            maps_[2].alloc_arena(ptr, max_map);
+            backbone_set.alloc_arena(ptr, max_backbone);
+        }
       public:
         uint real_max CACHE_ALIGNED;
         uint new_max;
@@ -1001,8 +1012,6 @@ class CountLiberties {
             return threads;
         }
         void catch_exception();
-        void map_load_factor(float factor);
-        void backbone_load_factor(float factor);
 
       private:
         class finish_exception: public std::exception {
@@ -1060,6 +1069,7 @@ class CountLiberties {
     static size_t get_memory() HOT;
 
     CountLiberties(int height, uint nr_threads = 1, bool save_thread = true);
+    ~CountLiberties();
     void clear();
     void clear_filter();
     auto reversed() const { return reversed_; }
@@ -1176,13 +1186,26 @@ class CountLiberties {
     void process_final(Args const args, ThreadData& thread_data) HOT;
     void process_asym(int direction, Args const args, ThreadData& thread_data) HOT;
 
-    void map_load_factor(float factor) { threads_.map_load_factor(factor); }
-    void backbone_load_factor(float factor) { threads_.backbone_load_factor(factor); }
+    void map_load_factor     (float factor) {
+        map_load_multiplier_ = 1. / factor;
+    }
+    void backbone_load_factor(float factor) {
+        backbone_load_multiplier_ = 1. / factor;
+    }
   private:
     void _call_asym(int direction, int pos, ThreadData& thread_data) HOT;
 
     void _process(bool inject, int direction, Args const args,
                   uint from, bool left_black, ThreadData& thread_data) HOT;
+    void reserve_thread_maps(size_t max);
+    void map_reserve(EntrySet* set, auto size) {
+        set->reserve(size, map_load_multiplier_);
+        if (UNLIKELY(set->used() > max_map_)) fatal("map overflow");
+    }
+    void backbone_reserve(EntrySet& set, auto size) {
+        set.reserve(size, backbone_load_multiplier_);
+        if (UNLIKELY(set.used() > max_backbone_)) fatal("backbone overflow");
+    }
     void entry_clear(int index) HOT {
         entry_clear(entries_[index]);
     }
@@ -1231,6 +1254,14 @@ class CountLiberties {
     uint filter_need_;
     int target_width_;
     int max_entries_;
+    float map_load_multiplier_;
+    float backbone_load_multiplier_;
+    size_t max_map_;
+    size_t max_backbone_;
+    size_t threads_arena_map_;
+    size_t threads_arena_backbone_;
+    size_t threads_arena_allocated_;
+    char* threads_arena_;
     // Reversed is a threads shared non atomic variable unprotected by any lock
     // We only ever will use it if there is only one column in the current
     // EntrySets, in which case only one thread will have updated it
@@ -1253,6 +1284,26 @@ class CountLiberties {
     };
     mutable std::vector<Size> sizes_;
     mutable std::vector<int> indices_;
+    //  1:     3
+    //  2:     6
+    //  3:     4
+    //  4:     6
+    //  5:     7
+    //  6:    11
+    //  7:    17
+    //  8:    32
+    //  9:    42
+    // 10:    83
+    // 11:   135
+    // 12:   235
+    // 13:   417
+    // 14:   771
+    // 15:  1259
+    // 16:  2485
+    // 17:  4387
+    // 18:  8135
+    // 19: 14814
+    // 20: 28106
     std::vector<int> indices0_;
 };
 
@@ -1278,14 +1329,6 @@ double const CountLiberties::cost_multiplier = 1. / cost_divider;
 CountLiberties::ThreadData::ThreadData() :
     operation_{WAITING}
 {
-    if (0) {
-        backbone_set.reserve(1024);
-        backbone_set.clear();
-        for (auto& map: *this) {
-            map.reserve(1024);
-            map.clear();
-        }
-    }
     work_init();
 }
 
@@ -1682,17 +1725,6 @@ inline void CountLiberties::Threads::start(CountLiberties* count_liberties) {
         std::cout << "Started\n";
 }
 
-void CountLiberties::Threads::map_load_factor(float factor) {
-    for (auto& thread_data: threads_data_)
-        for (auto& map: thread_data)
-            map.max_load_factor(factor);
-}
-
-void CountLiberties::Threads::backbone_load_factor(float factor) {
-    for (auto& thread_data: threads_data_)
-        thread_data.backbone_set.max_load_factor(factor);
-}
-
 /* ========================================================================= */
 
 void CountLiberties::target_width(int target_width) {
@@ -1913,6 +1945,7 @@ void CountLiberties::call_signature(ThreadData& thread_data) {
     thread_data.result = signature;
 }
 
+// size_t max_max = 0;
 auto CountLiberties::signature() -> uint64_t {
     threads_.signature();
 
@@ -1988,7 +2021,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
 
     entries.clear();
     entries.reserve(map->size());
-    backbone_set.reserve(map->size());
+    backbone_reserve(backbone_set, map->size());
     auto   up_mask = Entry::stone_mask(pos);
     auto down_mask = Entry::stone_mask(height() - 1 - pos);
     // std::cout << "map size=" << map->size() << "\n";
@@ -2190,7 +2223,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     backbone_set.clear();
     // This is a slight speedup. Possibly because it does not delay fixing
     // up the TERMINATOR position (it's still in cache now)
-    backbone_set.reserve(0);
+    backbone_reserve(backbone_set, 0);
     // Shrink since we probably pruned
     if (DEBUG_STORE)
         std::cout << "   Close entryset " << index << "\n";
@@ -2566,8 +2599,8 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
         args.rindex1 = j+bits;
 
         size_t grow = entries_[j].size() + entries_[j+bits].size();
-        map0->reserve(grow);
-        map1->reserve(grow+1);
+        map_reserve(map0, grow);
+        map_reserve(map1, grow+1);
 
         process_down(args, thread_data);
         if (j == 0) inject(1, args, thread_data);
@@ -2619,8 +2652,8 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
         args.rindex1 = rj+bits;
 
         size_t grow = entries_[j].size() + entries_[j+bits].size();
-        map0->reserve(grow);
-        map1->reserve(grow+1);
+        map_reserve(map0, grow);
+        map_reserve(map1, grow+1);
 
         process_final(args, thread_data);
         if (j == 0) inject(0, args, thread_data);
@@ -2670,8 +2703,8 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
 
             size_t grow1 = entries_[j].size() + entries_[j+bits].size();
             size_t grow2 = entries_[j+rbits].size() + entries_[j+cbits].size();
-            map1->reserve(grow1 + grow2 + 1);
-            map0->reserve(grow1+1);
+            map_reserve(map1, grow1 + grow2 + 1);
+            map_reserve(map0, grow1+1);
 
             args.map0    = map0;
             args.map1    = map1;
@@ -2686,7 +2719,7 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             int neighbour = ~(j >> 1) & bits;
             entry_transfer(thread_data, map0, j, pos, neighbour, neighbour);
 
-            map0->reserve(grow2);
+            map_reserve(map0, grow2);
 
             args.map0    = map1;
             args.map1    = map0;
@@ -2714,10 +2747,10 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             size_t grow4 = entries_[j+rbits].size() + entries_[j+cbits].size();
             // size_t grow2 = entries_[rj].size() + entries_[rj+bits].size();
             size_t grow2 = entries_[rj].size();
-            map1->reserve(grow2+grow4);
+            map_reserve(map1, grow2+grow4);
             size_t grow1 = entries_[j].size() + entries_[j+bits].size();
-            map2->reserve(grow1+grow3);
-            map0->reserve(grow1+grow2);
+            map_reserve(map2, grow1+grow3);
+            map_reserve(map0, grow1+grow2);
 
             args.map0    = map0;
             args.map1    = map2;
@@ -2743,7 +2776,7 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             // The rj map can never get filled since j is smaller
             entry_clear(rj);
 
-            map0->reserve(grow3+grow4);
+            map_reserve(map0, grow3+grow4);
 
             if (grow3) {
                 args.map0    = map2;
@@ -2791,6 +2824,65 @@ void CountLiberties::call_asym_final(int pos, ThreadData& thread_data) {
     _call_asym(0, pos, thread_data);
 }
 
+void CountLiberties::reserve_thread_maps(size_t max) {
+    if (max) {
+        --max;
+        max_map_ = max * map_load_multiplier_;
+        // We must have at least 1 empty to prevent find() from looping
+        if (max_map_ < max) max_map_ = max;
+        assert(max_map_ > 0);
+        // Set all bits after the first one
+        max_map_ = (static_cast<size_t>(0) - 1) >> clz(max_map_);
+        ++max_map_;
+
+        max_backbone_ = max * backbone_load_multiplier_;
+        // We must have at least 1 empty to prevent find() from looping
+        if (max_backbone_ < max) max_backbone_ = max;
+        assert(max_backbone_ > 0);
+        // Set all bits after the first one
+        max_backbone_ = (static_cast<size_t>(0) - 1) >> clz(max_backbone_);
+        ++max_backbone_;
+    } else {
+        max_map_      = 0;
+        max_backbone_ = 0;
+    }
+    size_t size_map = ((max_map_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
+    size_t size_backbone = ((max_backbone_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
+    size_t needed = (3*size_map + size_backbone) * threads_.nr_threads();
+    // std::cout << "(3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
+
+    // Check if the currently assigned areas are big enough
+    if (max_map_      <= threads_arena_map_ &&
+        max_backbone_ <= threads_arena_backbone_) return;
+
+    // std::cout << "max_map_=" << max_map_ << ",max_backbone_=" << max_backbone_ << "\n";
+    if (needed > threads_arena_allocated_) {
+        delete[] threads_arena_;
+        // free(threads_arena_);
+        threads_arena_ = nullptr;
+        // Go a factor 2 over to avoid many small increases
+        max_map_      *= 2;
+        max_backbone_ *= 2;
+        size_t size_map = ((max_map_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
+        size_t size_backbone = ((max_backbone_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
+        needed = (3*size_map + size_backbone) * threads_.nr_threads();
+        threads_arena_allocated_ = needed;
+        // threads_arena_ = aligned_alloc(_CACHE_LINE, threads_arena_allocated_);
+        threads_arena_ = new char[threads_arena_allocated_];
+        // std::cout << "allocated " << threads_arena_ << ", size " << threads_arena_allocated_ << " bytes\n";
+
+        // if (!threads_arena_) throw std::bad_alloc();
+    }
+
+    auto ptr = reinterpret_cast<EntrySet::value_type*>(threads_arena_);
+
+    for (auto& thread: threads_)
+        thread.alloc_arenas(ptr, max_map_, max_backbone_);
+    threads_arena_map_      = max_map_;
+    threads_arena_backbone_ = max_backbone_;
+    // std::cout << "Used " << reinterpret_cast<char*>(ptr) - reinterpret_cast<char*>(threads_arena_)  << " bytes\n";
+}
+
 int CountLiberties::run_round(int x, int pos) {
     int filter = x < target_width() ? filter_[x].at(pos) :  0;
     int record = x < target_width() ? record_map_[x].at(pos) : -1;
@@ -2824,7 +2916,7 @@ int CountLiberties::run_round(int x, int pos) {
     bool const final = pos == height()-1;
     int i = pos >> 1;
     int pos_left, bits, rbits;
-    uint max = 0;
+    EntryVector::size_type max = 0;
     if ((pos & 1) == 0 && !final) {
         // even, work from top down
         pos_left = i;
@@ -2954,13 +3046,13 @@ int CountLiberties::run_round(int x, int pos) {
     // I suspect that at a big enough problem size max will start growing
     // with an exponent above 2 and counting sort will start losing to a plain
     // sort on sizes_. However for any problem sizes we can realistically handle
-    // on current computers max is pretty restricted (e.g. it is only 38662 for
+    // on current computers max is pretty restricted (e.g. it is only 14814 for
     // a 19x19 board and the growth factor is still below 2).
     ++max;
     // if (max > max_max) max_max = max;
     // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
     uint accu = 0;
-    for (uint i=0; i < max; ++i) {
+    for (EntryVector::size_type i=0; i < max; ++i) {
         auto tmp = indices0[i];
         indices0[i] = accu;
         accu += tmp;
@@ -2970,6 +3062,11 @@ int CountLiberties::run_round(int x, int pos) {
     for (auto s = &sizes_[0]; s < sizes; ++s)
         indices[indices0[s->size]++] = s->index;
     std::memset(indices0, 0, max*sizeof(indices0[0]));
+
+    // We could tighten max_map_ and max_backbone_ by a factor of 2 or so for
+    // the common case of call_asym j!=rj
+    // Called after max already increased by 1 to account for inject()
+    reserve_thread_maps(max);
 
     int ttop = sizes - &sizes_[0];
     uint threads = threads_.execute(this, ttop);
@@ -3189,7 +3286,13 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     height_{height},
     nr_classes_{1 << height_},
     threads_{nr_threads, save_thread},
-    max_entries_{0}
+    max_entries_{0},
+    map_load_multiplier_{1. / MAP_LOAD_FACTOR},
+    backbone_load_multiplier_{1. / BACKBONE_LOAD_FACTOR},
+    threads_arena_map_{0},
+    threads_arena_backbone_{0},
+    threads_arena_allocated_{0},
+    threads_arena_{nullptr}
 {
     // std::cout << "height=" << height_ << "\n";
     if (height > EXPANDED_SIZE)
@@ -3222,12 +3325,15 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     // 100 is an arbitrary starting point to the exponential resizes
     // Avoid the need of many small initial steps before serious progress
     indices0_.resize(100);
-    map_load_factor(MAP_LOAD_FACTOR);
-    backbone_load_factor(BACKBONE_LOAD_FACTOR);
 
     clear();
 
     threads_.start(this);
+}
+
+CountLiberties::~CountLiberties() {
+    // free(threads_arena_);
+    delete[] threads_arena_;
 }
 
 class je_malloc_stats {
@@ -3742,6 +3848,15 @@ CountLiberties::thread_data_size()
   CODE:
     PERL_UNUSED_VAR(CLASS);
     RETVAL = sizeof(CountLiberties::ThreadData);
+  OUTPUT:
+    RETVAL
+
+static UV
+CountLiberties::vector_size()
+  CODE:
+    PERL_UNUSED_VAR(CLASS);
+    std::vector<int> dummy;
+    RETVAL = sizeof(dummy);
   OUTPUT:
     RETVAL
 
