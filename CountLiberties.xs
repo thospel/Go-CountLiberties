@@ -205,8 +205,8 @@ class CountLiberties {
         // (result available as EXPANDED_SIZE)
         // MAX_SIZE can be increased up to 24, but 21 or above leave only
         // 8 HISTORY_BITS, so finding an actual solution will be slow
-        // MAX_SIZE	= 19,					// 19
-        MAX_SIZE	= 24,					// 24
+        MAX_SIZE	= 19,					// 19
+        // MAX_SIZE	= 24,					// 24
         MAX_BITS	= MAX_SIZE*BITS_PER_VERTEX,		// 38
         COMPRESSED_SIZE	= (MAX_BITS+7)/8,			//  5
         EXPANDED_SIZE   = COMPRESSED_SIZE*8/BITS_PER_VERTEX,	// 20
@@ -2344,6 +2344,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
     uint up_black, down_black, up_or_down_black;
     uint64_t up_mask, down_mask;
+    bool liberty_prune = false;
     // Short circuit the test. compiler dead code elimination will do it for us
     if (true || direction >= 0) {
         // Make sure that args.pos == 0 works and results in up_black == 0
@@ -2358,9 +2359,10 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
         // Test should be against (from & 0x2), but args.index0 has the same bit
         // Need height != 2 otherwise the reverses make both sides impossible
-        if (PRUNE_SIDES && direction > 0 && left_black && args.pos == 0 && height() != 2) {
+        if (PRUNE_SIDES && direction > 0 && args.pos == 0 && height() != 2) {
             // std::cout << "Hit up" << std::endl;
-            args.filter = -1;
+             liberty_prune = true;
+            if (left_black) args.filter = -1;
         }
     }
 
@@ -2380,9 +2382,10 @@ void CountLiberties::_process(bool inject, int direction, Args args,
                        Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
         // Need height != 2 otherwise the reverses make both sides impossible
-        if (PRUNE_SIDES && direction < 0 && left_black && args.pos == height()-1 && height() !=2) {
+        if (PRUNE_SIDES && direction < 0 && args.pos == height()-1 && height() !=2) {
+            liberty_prune = true;
             // std::cout << "Hit down" << std::endl;
-            args.filter = -1;
+            if (left_black) args.filter = -1;
         }
     }
 
@@ -2472,6 +2475,8 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
             Entry& result = entry;
 
+            // nogain should be eliminated by the compiler unless direction == 0
+            int nogain = 3;
             if (!left_black) {
                 if (left != (LIBERTY & STONE_MASK)) {
                     // EMPTY
@@ -2480,8 +2485,9 @@ void CountLiberties::_process(bool inject, int direction, Args args,
                     result.set_black(stone_mask);	// sets BLACK
                     result.liberties_add(1);
                 } else {
-                    if (PRUNE_SIDES && direction > 0 && args.pos == 0 && height() != 2) continue;
-                    if (PRUNE_SIDES && direction < 0 && args.pos == height()-1 && height() !=2) continue;
+                    // LIBERTY
+                    if (direction != 0 && liberty_prune) continue;
+                    if (direction == 0 && !inject) --nogain;
                     // We don't need to set to BLACK since LIBERTY and BLACK
                     // use the same bits
                     // result.set_black(stone_mask);	// sets BLACK
@@ -2525,6 +2531,9 @@ void CountLiberties::_process(bool inject, int direction, Args args,
                         // up = LIBERTY
                         result.set_liberty(up_mask);
                         result.liberties_add(1);
+                    } else {
+                        // LIBERTY
+                        if (direction == 0 && !inject) --nogain;
                     }
                 }
             }
@@ -2565,9 +2574,15 @@ void CountLiberties::_process(bool inject, int direction, Args args,
                         // down = LIBERTY
                         result.set_liberty(down_mask);
                         result.liberties_add(1);
+                    } else {
+                        // LIBERTY
+                        if (direction == 0 && !inject) --nogain;
                     }
                 }
             }
+
+            if (direction == 0 && !inject && !left_black && nogain == 0)
+                continue;
 
             if (sym1) sym_compress(result, args.index1, args.rindex1);
 
