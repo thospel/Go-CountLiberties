@@ -1080,11 +1080,6 @@ class CountLiberties {
         int x_, y_;
     };
 
-    struct FullEntry {
-        Entry entry;
-        uint64_t liberties = 0;
-    };
-
     static size_t get_memory() HOT;
 
     CountLiberties(int height, uint nr_threads = 1, bool save_thread = true);
@@ -1258,8 +1253,9 @@ class CountLiberties {
     std::vector<std::vector<int>> record_map_;
     std::vector<double> cost_;
     std::vector<Coordinate> record_;
-    std::vector<FullEntry> full_column_;
-    FullEntry current_full_column_;
+    std::vector<uint64_t> full_liberties_;
+    uint64_t current_full_liberties_;
+    Entry full_entry_;
     Entry max_entry_;
     int offset_;		// Current Liberty renormalization
     int max_index_;
@@ -2046,14 +2042,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     // std::cout << "map size=" << map->size() << "\n";
 
     // Maximum over all indices
-    uint64_t full_liberties = current_full_column_.liberties;
-    if (full_liberties) {
-        if (full_liberties > offset_ +2)
-            full_liberties = full_liberties - (offset_ +2);
-        else
-            full_liberties = 0;
-    }
-
+    uint64_t full_liberties = current_full_liberties_;
     for (auto const& element: *map) {
         auto entry = element.entry;
         uint64_t liberties{entry.liberties()};
@@ -2061,8 +2050,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
         if (liberties <= full_liberties) {
             auto libs = liberties + entry.nr_empty(index_mask);
             if (libs < full_liberties) continue;
-            if (libs == full_liberties &&
-                !equal(entry, current_full_column_.entry))
+            if (libs == full_liberties && !equal(entry, full_entry_))
                 continue;
         }
 
@@ -3088,7 +3076,15 @@ int CountLiberties::run_round(int x, int pos) {
     // Notice that inject is already accounted for during the index 0 code
     reserve_thread_maps(max+1);
 
+    size_t vertex = x * height() + pos+1;
+    current_full_liberties_ = full_liberties_[vertex-1];
     if (sizes[-1].index == limit && sizes >= &sizes_[2]) {
+        if (current_full_liberties_) {
+            if (current_full_liberties_ > offset_ +1)
+                current_full_liberties_ = current_full_liberties_ - (offset_ +1);
+            else
+                current_full_liberties_ = 0;
+        }
         // Execute the full column outside any threads
         // This entry can never be very big
         // (trivially <= 32, in reality probably <= 8)
@@ -3098,36 +3094,37 @@ int CountLiberties::run_round(int x, int pos) {
         threads_.save_execute(this);
 
         // Find the number of liberties of the fully connected colum (if any)
-        // current_full_column_.liberties = 0;
-        // In principle we should set current_full_column_.liberties 0 in case
+        // current_full_liberties_ = 0;
+        // In principle we should set current_full_liberties_ 0 in case
         // there is no full column. But the PRUNE_SIDES option will quite often
         // prune a bumpy full column. Still, without the pruning we would get a
         // full column at least as good as the previous one. So instead just
         // keep the last liberties limit. Also keep the column itself so we
         // won't prune any full column
+        current_full_liberties_ = full_liberties_[vertex-1];
         size_t full_index = nr_classes()-1;
-        auto full_mask  = index_masks_[full_index];
-        // current_full_column_.entry.invalid();
         for (auto const& entry: entries_[full_index]) {
             // If there are bumps the column can be disconnected
-            if (!multichain(entry, full_mask)) {
-                current_full_column_.entry = entry;
-                // +2 makes sure full_liberties > 0 even if real liberties == 0
+            if (equal(entry, full_entry_)) {
+                // +1 makes sure full_liberties > 0 even if real liberties == 0
                 // so we can distinguish it from when no full entry exists
-                current_full_column_.liberties = entry.liberties() + (offset_+2);
-                // std::cout << "Found full with " << current_full_column_.liberties-2 << " liberties" << std::endl;
+                current_full_liberties_ = entry.liberties() + (offset_+1);
                 break;
             }
         }
-        // std::cout << "full liberties=" << current_full_column_.liberties << std::endl;
     }
-    size_t vertex = x * height() + pos;
-    if (vertex >= full_column_.size()) {
-        full_column_.resize(vertex);
-        full_column_.emplace_back(current_full_column_);
-    } else if (full_column_[vertex].liberties > current_full_column_.liberties)
-        current_full_column_ = full_column_[vertex];
-    // std::cout << "Set full to " << current_full_column_.liberties-2 << " liberties" << ", offset=" << offset_ << std::endl;
+    if (vertex >= full_liberties_.size()) {
+        full_liberties_.resize(vertex);
+        full_liberties_.emplace_back(current_full_liberties_);
+    } else if (current_full_liberties_ < full_liberties_[vertex])
+        current_full_liberties_ = full_liberties_[vertex];
+    // std::cout << "Set full to " << current_full_liberties_-1 << " liberties" << ", offset=" << offset_ << std::endl;
+    if (current_full_liberties_) {
+        if (current_full_liberties_ > offset_ +1)
+            current_full_liberties_ = current_full_liberties_ - (offset_ +1);
+        else
+            current_full_liberties_ = 0;
+    }
 
     // Process counting results to get a sorted list
     // I suspect that at a big enough problem size max will start growing
@@ -3298,8 +3295,7 @@ void CountLiberties::clear() {
     max_real_max_ = 0;
     new_min_ = MAX_LIBERTIES;
 
-    current_full_column_.entry = Entry::invalid();
-    current_full_column_.liberties = 0;
+    current_full_liberties_ = 0;
 
     Entry entry;
     entry.clear(-offset_);
@@ -3375,6 +3371,7 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
         index_masks_[i]  = Entry::backbone_mask(i);
     }
     target_width(height_);
+    full_entry_ = Entry::full(index_masks_[nr_classes()-1]);
 
     entry00_.reserve(1);
     // One extra to hold the empty column injector
@@ -3384,6 +3381,7 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     // 100 is an arbitrary starting point to the exponential resizes
     // Avoid the need of many small initial steps before serious progress
     indices0_.resize(100);
+    full_liberties_.emplace_back(0);
 
     clear();
 
