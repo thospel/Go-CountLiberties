@@ -56,6 +56,9 @@
 # include <jemalloc/jemalloc.h>
 #endif /* JEMALLOC */
 
+#include <sys/mman.h>
+#include <errno.h>
+
 #include <assert.h>
 
 #include <cmath>
@@ -123,8 +126,10 @@ size_t const PAGE_SIZE = 4096;
 bool const ARENA_MALLOC = true;
 // size_t const ARENA_ALIGNMENT = _CACHE_LINE;
 size_t const ARENA_ALIGNMENT = PAGE_SIZE;
+size_t const ARENA_MLOCK = -1;
 
 void fatal(std::string const message) NORETURN COLD;
+void sys_fatal(std::string const message) NORETURN COLD;
 
 NOINLINE void fatal(std::string message) {
     if (true) {
@@ -133,6 +138,12 @@ NOINLINE void fatal(std::string message) {
     } else {
         throw std::logic_error(message);
     }
+}
+
+NOINLINE void sys_fatal(std::string message) {
+    message += ": ";
+    message += strerror(errno);
+    fatal(message);
 }
 
 // Only call on unsigned types or be sure that the top it is not set
@@ -197,8 +208,8 @@ class CountLiberties {
         // (result available as EXPANDED_SIZE)
         // MAX_SIZE can be increased up to 24, but 21 or above leave only
         // 8 HISTORY_BITS, so finding an actual solution will be slow
-        MAX_SIZE	= 19,					// 19
-        // MAX_SIZE	= 24,					// 24
+        // MAX_SIZE	= 19,					// 19
+        MAX_SIZE	= 24,					// 24
         MAX_BITS	= MAX_SIZE*BITS_PER_VERTEX,		// 38
         COMPRESSED_SIZE	= (MAX_BITS+7)/8,			//  5
         EXPANDED_SIZE   = COMPRESSED_SIZE*8/BITS_PER_VERTEX,	// 20
@@ -1947,7 +1958,7 @@ void CountLiberties::call_signature(ThreadData& thread_data) {
     thread_data.result = signature;
 }
 
-// size_t max_max = 0;
+size_t max_max = 0;
 auto CountLiberties::signature() -> uint64_t {
     threads_.signature();
 
@@ -1977,7 +1988,7 @@ auto CountLiberties::signature() -> uint64_t {
     if (max) {
         // Process counting results to get a sorted list
         ++max;
-        // if (max > max_max) max_max = max;
+        if (max > max_max) max_max = max;
         // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
         uint accu = 0;
         for (uint i=0; i < max; ++i) {
@@ -2859,8 +2870,14 @@ void CountLiberties::reserve_thread_maps(size_t max) {
 
     // std::cout << "max_map_=" << max_map_ << ",max_backbone_=" << max_backbone_ << "\n";
     if (needed > threads_arena_allocated_) {
-        if (ARENA_MALLOC) free(threads_arena_);
-        else              delete[] threads_arena_;
+        if (ARENA_MALLOC) {
+            if ((ARENA_ALIGNMENT & (PAGE_SIZE-1)) == 0 && threads_arena_ &&
+                threads_arena_allocated_ <= ARENA_MLOCK)
+                if (munlock(threads_arena_, threads_arena_allocated_))
+                    sys_fatal("Cannot munlock");
+            free(threads_arena_);
+        } else
+            delete[] threads_arena_;
         threads_arena_ = nullptr;
         if (false) {
             // Go a factor 2 over to avoid many small increases
@@ -2873,10 +2890,14 @@ void CountLiberties::reserve_thread_maps(size_t max) {
         struct alignas(_CACHE_LINE) Dummy {
             EntrySet::value_type dummy[_CACHE_LINE / sizeof(EntrySet::value_type)];
         };
+        std::cout << "(3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
         if (ARENA_MALLOC) {
             threads_arena_allocated_ = (needed + ARENA_ALIGNMENT - 1) / ARENA_ALIGNMENT * ARENA_ALIGNMENT;
             threads_arena_ = reinterpret_cast<EntrySet::value_type *>(aligned_alloc(ARENA_ALIGNMENT, threads_arena_allocated_));
             if (!threads_arena_) throw std::bad_alloc();
+            if ((ARENA_ALIGNMENT & (PAGE_SIZE-1)) == 0 && threads_arena_allocated_ <= ARENA_MLOCK)
+                if (mlock(threads_arena_, threads_arena_allocated_))
+                    sys_fatal("Cannot mlock " + std::to_string(threads_arena_allocated_) + " bytes");
         } else {
             threads_arena_allocated_ = needed;
             threads_arena_ = reinterpret_cast<EntrySet::value_type *>(new Dummy[threads_arena_allocated_ / sizeof(Dummy)]);
@@ -3061,7 +3082,10 @@ int CountLiberties::run_round(int x, int pos) {
     // on current computers max is pretty restricted (e.g. it is only 14814 for
     // a 19x19 board and the growth factor is still below 2).
     ++max;
-    // if (max > max_max) max_max = max;
+    if (max > max_max) {
+        std::cout << "max_max=" << max_max << std::endl;
+        max_max = max;
+    }
     // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
     uint accu = 0;
     for (EntryVector::size_type i=0; i < max; ++i) {
@@ -3233,8 +3257,8 @@ void CountLiberties::new_round() {
 }
 
 void CountLiberties::clear() {
-    // if (max_max) std::cout << height() << ": max_max=" << max_max << std::endl;
-    // max_max = 0;
+    if (max_max) std::cout << height() << ": max_max=" << max_max << std::endl;
+    max_max = 0;
     for (auto& entry: entries_)
         entry.clear();
     record_.clear();
@@ -3344,8 +3368,14 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
 }
 
 CountLiberties::~CountLiberties() {
-    if (ARENA_MALLOC) free(threads_arena_);
-    else              delete[] threads_arena_;
+    if (ARENA_MALLOC) {
+        if ((ARENA_ALIGNMENT & (PAGE_SIZE-1)) == 0 && threads_arena_ &&
+            threads_arena_allocated_ <= ARENA_MLOCK)
+            if (munlock(threads_arena_, threads_arena_allocated_))
+                sys_fatal("Cannot munlock");
+        free(threads_arena_);
+    } else
+        delete[] threads_arena_;
 }
 
 class je_malloc_stats {
