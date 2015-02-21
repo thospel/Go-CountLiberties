@@ -1214,7 +1214,8 @@ class CountLiberties {
     void reserve_thread_maps(size_t max);
     void map_reserve(EntrySet* set, auto size) {
         set->reserve(size, map_load_multiplier_);
-        if (UNLIKELY(set->used() > max_map_)) fatal("map overflow");
+        if (UNLIKELY(set->used() > max_map_))
+            fatal("map overflow used " + std::to_string(set->used()) + " > max_map " + std::to_string(max_map_));
     }
     void backbone_reserve(EntrySet& set, auto size) {
         set.reserve(size, backbone_load_multiplier_);
@@ -2479,6 +2480,8 @@ void CountLiberties::_process(bool inject, int direction, Args args,
                     result.set_black(stone_mask);	// sets BLACK
                     result.liberties_add(1);
                 } else {
+                    if (PRUNE_SIDES && direction > 0 && args.pos == 0 && height() != 2) continue;
+                    if (PRUNE_SIDES && direction < 0 && args.pos == height()-1 && height() !=2) continue;
                     // We don't need to set to BLACK since LIBERTY and BLACK
                     // use the same bits
                     // result.set_black(stone_mask);	// sets BLACK
@@ -2854,6 +2857,7 @@ void CountLiberties::reserve_thread_maps(size_t max) {
         // Set all bits after the first one
         max_backbone_ = (static_cast<size_t>(0) - 1) >> clz(max_backbone_);
         ++max_backbone_;
+        ++max;
     } else {
         max_map_      = 0;
         max_backbone_ = 0;
@@ -2861,7 +2865,7 @@ void CountLiberties::reserve_thread_maps(size_t max) {
     size_t size_map = ((max_map_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
     size_t size_backbone = ((max_backbone_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
     size_t needed = (3*size_map + size_backbone) * threads_.nr_threads();
-    // std::cout << "(3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
+    // std::cout << "max=" << max << " (3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
 
     // Check if the currently assigned areas are big enough
     if (max_map_      <= threads_arena_map_ &&
@@ -3073,7 +3077,8 @@ int CountLiberties::run_round(int x, int pos) {
 
     // We could tighten max_map_ and max_backbone_ by a factor of 2 or so for
     // the common case of call_asym j!=rj
-    // Notice that inject is already accounted for during the index 0 code
+    // Even though inject is already accounted for in max in the actual code
+    // we always grow the maps that CAN be injected by 1, so we need a +1
     reserve_thread_maps(max+1);
 
     size_t vertex = x * height() + pos+1;
