@@ -56,9 +56,7 @@
 # include <jemalloc/jemalloc.h>
 #endif /* JEMALLOC */
 
-#include <sys/mman.h>
 #include <errno.h>
-
 #include <assert.h>
 
 #include <cmath>
@@ -126,7 +124,6 @@ size_t const PAGE_SIZE = 4096;
 bool const ARENA_MALLOC = true;
 // size_t const ARENA_ALIGNMENT = _CACHE_LINE;
 size_t const ARENA_ALIGNMENT = PAGE_SIZE;
-size_t const ARENA_MLOCK = -1;
 
 void fatal(std::string const message) NORETURN COLD;
 void sys_fatal(std::string const message) NORETURN COLD;
@@ -986,6 +983,15 @@ class CountLiberties {
         void finish() {
             operation_ = FINISH;
         }
+        uint save_execute(CountLiberties* count_liberties, uint ttop = 1) {
+            auto tmp = save_thread_;
+            auto op = operation_;
+            save_thread_ = 1;
+            auto rc = execute(count_liberties, ttop);
+            operation_ = op;
+            save_thread_ = tmp;
+            return rc;
+        }
         uint execute(CountLiberties* count_liberties, uint ttop) {
             if (ttop == 0) fatal("No work to start (operation " + std::to_string(operation_) + ")");
             uint threads = ttop < nr_threads() ? ttop : nr_threads();
@@ -1243,6 +1249,7 @@ class CountLiberties {
     std::vector<EntryVector> entries_;
     std::vector<int> reverse_bits_;
     std::vector<uint64_t> index_masks_;
+    std::vector<int> indices_;
     EntryVector entry00_;
 
     // Stuff not accessed from within a thread or constant during a thread
@@ -1296,7 +1303,6 @@ class CountLiberties {
         uint size  = 0;
     };
     mutable std::vector<Size> sizes_;
-    mutable std::vector<int> indices_;
     //  1:     3
     //  2:     6
     //  3:     4
@@ -1958,7 +1964,7 @@ void CountLiberties::call_signature(ThreadData& thread_data) {
     thread_data.result = signature;
 }
 
-size_t max_max = 0;
+// size_t max_max = 0;
 auto CountLiberties::signature() -> uint64_t {
     threads_.signature();
 
@@ -1988,7 +1994,7 @@ auto CountLiberties::signature() -> uint64_t {
     if (max) {
         // Process counting results to get a sorted list
         ++max;
-        if (max > max_max) max_max = max;
+        // if (max > max_max) max_max = max;
         // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
         uint accu = 0;
         for (uint i=0; i < max; ++i) {
@@ -2039,9 +2045,27 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     auto down_mask = Entry::stone_mask(height() - 1 - pos);
     // std::cout << "map size=" << map->size() << "\n";
 
+    // Maximum over all indices
+    uint64_t full_liberties = current_full_column_.liberties;
+    if (full_liberties) {
+        if (full_liberties > offset_ +2)
+            full_liberties = full_liberties - (offset_ +2);
+        else
+            full_liberties = 0;
+    }
+
     for (auto const& element: *map) {
         auto entry = element.entry;
         uint64_t liberties{entry.liberties()};
+
+        if (liberties <= full_liberties) {
+            auto libs = liberties + entry.nr_empty(index_mask);
+            if (libs < full_liberties) continue;
+            if (libs == full_liberties &&
+                !equal(entry, current_full_column_.entry))
+                continue;
+        }
+
         if (up) {
             if (entry.test_vertex(up_mask)) {
                 // EMPTY
@@ -2119,9 +2143,10 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     }
     // std::cout << "backbone size=" << backbone_set.size() << "\n";
 
+    // Maximum within this index
     Entry full = Entry::full(index_mask);
     auto found_full = backbone_set.find(full, index_mask);
-    uint64_t full_liberties = 0;
+    full_liberties = 0;
     if (found_full) {
         full = found_full->entry;
         full_liberties = full.liberties();
@@ -2390,23 +2415,9 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
     if (DEBUG_FETCH) std::cout << "   Read entryset " << from << "\n";
 
-    uint64_t full_liberties = current_full_column_.liberties;
-    if (full_liberties) {
-        if (full_liberties + args.old_min > offset_ +2)
-            full_liberties = full_liberties + args.old_min - (offset_ +2);
-        else
-            full_liberties = 0;
-    }
     // std::cout << "\tentries " << from << " size " << entries_[inject ? nr_classes() : from].size() << "\n";
     for (auto entry: entries_[inject ? nr_classes() : from]) {
         if (DEBUG_FETCH) std::cout << "      Entry: " << entry.raw_column_string() << ", raw libs=" << static_cast<uint>(entry.liberties()) << "\n";
-        auto liberties = entry.liberties();
-        if (liberties <= full_liberties) {
-            liberties += entry.nr_empty(index_mask);
-            if (liberties < full_liberties) continue;
-            if (liberties == full_liberties && !equal(entry, current_full_column_.entry))
-                continue;
-        }
         entry.liberties_subtract(args.old_min);
         if (DEBUG_FLOW) {
             std::cout << "      " << (inject ? "Inject" : "In") << ": '" <<
@@ -2871,10 +2882,6 @@ void CountLiberties::reserve_thread_maps(size_t max) {
     // std::cout << "max_map_=" << max_map_ << ",max_backbone_=" << max_backbone_ << "\n";
     if (needed > threads_arena_allocated_) {
         if (ARENA_MALLOC) {
-            if ((ARENA_ALIGNMENT & (PAGE_SIZE-1)) == 0 && threads_arena_ &&
-                threads_arena_allocated_ <= ARENA_MLOCK)
-                if (munlock(threads_arena_, threads_arena_allocated_))
-                    sys_fatal("Cannot munlock");
             free(threads_arena_);
         } else
             delete[] threads_arena_;
@@ -2890,14 +2897,11 @@ void CountLiberties::reserve_thread_maps(size_t max) {
         struct alignas(_CACHE_LINE) Dummy {
             EntrySet::value_type dummy[_CACHE_LINE / sizeof(EntrySet::value_type)];
         };
-        std::cout << "(3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
+        // std::cout << "(3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
         if (ARENA_MALLOC) {
             threads_arena_allocated_ = (needed + ARENA_ALIGNMENT - 1) / ARENA_ALIGNMENT * ARENA_ALIGNMENT;
             threads_arena_ = reinterpret_cast<EntrySet::value_type *>(aligned_alloc(ARENA_ALIGNMENT, threads_arena_allocated_));
             if (!threads_arena_) throw std::bad_alloc();
-            if ((ARENA_ALIGNMENT & (PAGE_SIZE-1)) == 0 && threads_arena_allocated_ <= ARENA_MLOCK)
-                if (mlock(threads_arena_, threads_arena_allocated_))
-                    sys_fatal("Cannot mlock " + std::to_string(threads_arena_allocated_) + " bytes");
         } else {
             threads_arena_allocated_ = needed;
             threads_arena_ = reinterpret_cast<EntrySet::value_type *>(new Dummy[threads_arena_allocated_ / sizeof(Dummy)]);
@@ -2925,6 +2929,9 @@ int CountLiberties::run_round(int x, int pos) {
     // It's easy to prove that if there is a solution where the first stone is
     // in column 3, there is at least as good a solution with a stone in column
     // 2, so after this point we don't need to inject empty columns anymore
+    // Easier way to see it: A full column on column 2 after an empty on column
+    // 1 already has height() liberties. Empty up to column 2 can at most equal
+    // that
     if (x >= 2) entries_[nr_classes()].clear();
 
     for (auto& thread_data: threads_) {
@@ -2950,6 +2957,7 @@ int CountLiberties::run_round(int x, int pos) {
     int i = pos >> 1;
     int pos_left, bits, rbits;
     EntryVector::size_type max = 0;
+    int limit = max_entries_;
     if ((pos & 1) == 0 && !final) {
         // even, work from top down
         pos_left = i;
@@ -2976,7 +2984,6 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
-        int limit = max_entries_;
         if (limit & bits) limit = (limit & ~bits) | (bits-1);
         for (int j=1; j<=limit; ++j) {
             if (j & bits) continue;
@@ -2995,6 +3002,7 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
+        limit = (nr_classes() - 1) & ~bits;
     } else {
         // odd, work from bottom up
         pos_left = height()-1-i;
@@ -3035,7 +3043,6 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
-        int limit = max_entries_;
         if (limit & bits)  limit = (limit & ~ bits) |  (bits-1);
         if (limit & rbits) limit = (limit & ~rbits) | (rbits-1);
         for (int j=1; j<=limit; ++j) {
@@ -3064,16 +3071,63 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
+        limit = (nr_classes() - 1) & ~cbits;
     }
 
-    if (0) {
+    if (false) {
         std::cout <<
             "Unsorted Width=" << nr_classes() <<
             ", ttop=" << sizes - &sizes_[0] <<
-            ", bits=" << bits << ", rbits=" << rbits << "\n";
+            ", bits=" << bits << ", rbits=" << rbits << ", full=" << limit << "\n";
         for (auto s = &sizes_[0]; s < sizes; ++s)
             std::cout << "    index " << s->index << ": size " << s->size << "\n";
     }
+
+    // We could tighten max_map_ and max_backbone_ by a factor of 2 or so for
+    // the common case of call_asym j!=rj
+    // Notice that inject is already accounted for during the index 0 code
+    reserve_thread_maps(max+1);
+
+    if (sizes[-1].index == limit && sizes >= &sizes_[2]) {
+        // Execute the full column outside any threads
+        // This entry can never be very big
+        // (trivially <= 32, in reality probably <= 8)
+        --sizes;
+        --indices0[sizes->size];
+        indices_[0] = limit;
+        threads_.save_execute(this);
+
+        // Find the number of liberties of the fully connected colum (if any)
+        // current_full_column_.liberties = 0;
+        // In principle we should set current_full_column_.liberties 0 in case
+        // there is no full column. But the PRUNE_SIDES option will quite often
+        // prune a bumpy full column. Still, without the pruning we would get a
+        // full column at least as good as the previous one. So instead just
+        // keep the last liberties limit. Also keep the column itself so we
+        // won't prune any full column
+        size_t full_index = nr_classes()-1;
+        auto full_mask  = index_masks_[full_index];
+        // current_full_column_.entry.invalid();
+        for (auto const& entry: entries_[full_index]) {
+            // If there are bumps the column can be disconnected
+            if (!multichain(entry, full_mask)) {
+                current_full_column_.entry = entry;
+                // +2 makes sure full_liberties > 0 even if real liberties == 0
+                // so we can distinguish it from when no full entry exists
+                current_full_column_.liberties = entry.liberties() + (offset_+2);
+                // std::cout << "Found full with " << current_full_column_.liberties-2 << " liberties" << std::endl;
+                break;
+            }
+        }
+        // std::cout << "full liberties=" << current_full_column_.liberties << std::endl;
+    }
+    size_t vertex = x * height() + pos;
+    if (vertex >= full_column_.size()) {
+        full_column_.resize(vertex);
+        full_column_.emplace_back(current_full_column_);
+    } else if (full_column_[vertex].liberties > current_full_column_.liberties)
+        current_full_column_ = full_column_[vertex];
+    // std::cout << "Set full to " << current_full_column_.liberties-2 << " liberties" << ", offset=" << offset_ << std::endl;
 
     // Process counting results to get a sorted list
     // I suspect that at a big enough problem size max will start growing
@@ -3082,10 +3136,10 @@ int CountLiberties::run_round(int x, int pos) {
     // on current computers max is pretty restricted (e.g. it is only 14814 for
     // a 19x19 board and the growth factor is still below 2).
     ++max;
-    if (max > max_max) {
-        std::cout << "max_max=" << max_max << std::endl;
-        max_max = max;
-    }
+    //if (max > max_max) {
+    //    std::cout << "max_max=" << max_max << std::endl;
+    //    max_max = max;
+    //}
     // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
     uint accu = 0;
     for (EntryVector::size_type i=0; i < max; ++i) {
@@ -3098,11 +3152,6 @@ int CountLiberties::run_round(int x, int pos) {
     for (auto s = &sizes_[0]; s < sizes; ++s)
         indices[indices0[s->size]++] = s->index;
     std::memset(indices0, 0, max*sizeof(indices0[0]));
-
-    // We could tighten max_map_ and max_backbone_ by a factor of 2 or so for
-    // the common case of call_asym j!=rj
-    // Called after max already increased by 1 to account for inject()
-    reserve_thread_maps(max);
 
     int ttop = sizes - &sizes_[0];
     uint threads = threads_.execute(this, ttop);
@@ -3130,34 +3179,6 @@ int CountLiberties::run_round(int x, int pos) {
         max_index_ = threads_[t_max].max_index;
         max_entry_ = threads_[t_max].max_entry;
     }
-
-    // Find the number of liberties of the fully connected colum (if any)
-    // current_full_column_.liberties = 0;
-    // In principle we should set current_full_column_.liberties 0 in case there
-    // is no full column. But the PRUNE_SIDES option will quite often prune
-    // a bumpy full column. Still, without the pruning we would get a full
-    // column at least as good as the previous one. So instead just keep the
-    // last liberties limit and set an invalid placeholder
-    current_full_column_.entry = Entry::invalid();
-    size_t full_index = nr_classes()-1;
-    auto full_mask  = index_masks_[full_index];
-    for (auto const& entry: entries_[full_index]) {
-        // If there are bumps the column can be disconnected
-        if (!multichain(entry, full_mask)) {
-            current_full_column_.entry = entry;
-            // +2 makes sure full_liberties > 0 even if real liberties == 0
-            // so we can distinguish it from when no full entry exists
-            current_full_column_.liberties = entry.liberties() + (offset_+2);
-            break;
-        }
-    }
-    // std::cout << "full liberties=" << current_full_column_.liberties << std::endl;
-    size_t vertex = x * height() + pos;
-    if (vertex >= full_column_.size()) {
-        full_column_.resize(vertex);
-        full_column_.emplace_back(current_full_column_);
-    } else if (full_column_[vertex].liberties > current_full_column_.liberties)
-        current_full_column_ = full_column_[vertex];
 
     if (DEBUG_FLOW) {
         std::cout << "   Final maximum " << new_max_ + offset_ << " for '" << column_string(max_entry_, max_index_) << " (" << max_entry_.history_bitstring() << ")\n";
@@ -3257,8 +3278,8 @@ void CountLiberties::new_round() {
 }
 
 void CountLiberties::clear() {
-    if (max_max) std::cout << height() << ": max_max=" << max_max << std::endl;
-    max_max = 0;
+    // if (max_max) std::cout << height() << ": max_max=" << max_max << std::endl;
+    // max_max = 0;
     for (auto& entry: entries_)
         entry.clear();
     record_.clear();
@@ -3276,6 +3297,8 @@ void CountLiberties::clear() {
     new_real_max_ = 0;
     max_real_max_ = 0;
     new_min_ = MAX_LIBERTIES;
+
+    current_full_column_.entry = Entry::invalid();
     current_full_column_.liberties = 0;
 
     Entry entry;
@@ -3369,10 +3392,6 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
 
 CountLiberties::~CountLiberties() {
     if (ARENA_MALLOC) {
-        if ((ARENA_ALIGNMENT & (PAGE_SIZE-1)) == 0 && threads_arena_ &&
-            threads_arena_allocated_ <= ARENA_MLOCK)
-            if (munlock(threads_arena_, threads_arena_allocated_))
-                sys_fatal("Cannot munlock");
         free(threads_arena_);
     } else
         delete[] threads_arena_;
