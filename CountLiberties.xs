@@ -114,9 +114,80 @@ bool const COST           = true;
 // solutions but at least one optimal solution is guaranteed to survive
 bool const PRUNE_LOOPS  = true;
 
-// Depend on a theorem that says you can't have long lines along the top/bottom
-// for boards with height >= 3 (which does not mean you cannot have stones
-// on these lines. Towers can reach all the way)
+/*
+ Depend on a theorem that says you can't have long lines along the top/bottom
+ for boards with height >= 3 (which does not mean you cannot have stones
+ on these lines. Towers can reach all the way
+ Suppose you have 2 consecutive black on a top (or bottom) row
+ If it is a line not connected to anything else this can only happen if
+ height < 3, otherwise it is better to shift the row one down. So from here on
+ only consider boards with height >= 3 where the row is connected to another row
+ Consider the most left stone on the second row and the most the top row extends
+ to the right. If this is to the right of the leftmost connection to the second
+ row the cases are:
+
+  1.  There is also a connection to the second row at the extreme right:
+      -----                                        -----
+      XXXXX  can without any loss (and often gain) XLLLX
+      X???X  be changed to                         XXXXX
+  2.  There is no connection to the second row at the extreme right
+      2a. The top row extends to the edge of the board
+           -----+                                        -----+
+           XXXXX|  can without any loss (and often gain) XLLLL|
+           X????|  be changed to                         XXXXX|
+      2b. the top row does not reach to the end so it ends on a liberty
+          the end of the top row is not connected down, so also a liberty
+          (board height >= 3). So it is of the form:
+           ------
+           XXXXXL
+           X???L?
+          Consider 3 cases for the bottem right of the figure
+          2b1. A stone at the bottom right
+               ------                                   ------
+               XXXXXL Can never be optimal compared to  XXXXLL
+               X???LX                                   X???LX
+          2b2. Empty at the bottom right
+               ------                                   ------
+               XXXXXL Can without loss (and often gain) XLLLL?
+               X???LE be changed to                     XXXXXL
+          2b3. Liberty at the bottom right. This liberty must come from contact
+               with a stone (so we can extend that stone)
+               ------                                   ------
+               XXXXXL Can without loss be changed to    XXXXLL
+               X???LL (then maybe repeat reasoning)     X???LX
+
+ So any extension to the right of the top row can be removed
+ By symmetry any extension to the left can be removed too. So the only way
+ the top (or bottom) row need to be reached is as a column of width 1:
+           ---
+            X
+            X
+ So the first thing PRUNE_SIDES does is:
+   A. if a stone on the top of bottom row, don't put a stone to the right
+
+ Next consider a top row vertex that is already known to be a liberty with a
+ stone to the right:
+           ---
+           LX?
+            ?
+ Due to the reasoning above we will never put a stone on the top right ?
+ And if height >= 3 we MUST put a stone at the bottom ? or the top stone will
+ be disconnected, so we have:
+           ---
+           LXL
+            X?
+ We can without loss (and possible gain) replace that with:
+           ---
+           LLL
+            XX
+ So the second thing PRUNE_SIDES does is:
+   B. if a liberty on the top of bottom row, don't put a stone to the right
+
+ Both rules only apply if height >= 3. Since we will only apply them in _process
+ when direction > 0 or direction < 0 we can ignore height == 1 (only called with
+ direction == 0) and height == 2 is only called with direction >= 0 so we only
+ have to check height != 2 in the direction > 0 case
+*/
 bool const PRUNE_SIDES  = true;
 
 size_t const PAGE_SIZE = 4096;
@@ -193,12 +264,13 @@ class CountLiberties {
         BLACK_UP_DOWN	= 3,
 	// EMPTY and LIBERTY must take postions 4 and 7 because they get
         // processed with STONE_MASK applied and therefore map to BLACK and
-        // BLACK_UP_DOWN. And only these two don't change under reverse
+        // BLACK_UP_DOWN. And only these two don't change under bit reverse
         // We chose LIBERTY = 4 so that the initial "all liberties" has value 0
         LIBERTY		= 4,
         EMPTY		= 7,
         STATES		= 8,
         BITS_PER_VERTEX = 2,
+        // Mask to select the 2 bits of a vertex
         STONE_MASK	= (1 << BITS_PER_VERTEX) -1,		// 0x03,
 
         // MAX_SIZE will effectively be rounded up to the next multiple of 4
@@ -2381,8 +2453,8 @@ void CountLiberties::_process(bool inject, int direction, Args args,
             args.pos < EXPANDED_SIZE-1 ?
                        Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
-        // Need height != 2 otherwise the reverses make both sides impossible
-        if (PRUNE_SIDES && direction < 0 && args.pos == height()-1 && height() !=2) {
+        // No need to check for height != 2 since that never has direction < 0
+        if (PRUNE_SIDES && direction < 0 && args.pos == height()-1) {
             liberty_prune = true;
             // std::cout << "Hit down" << std::endl;
             if (left_black) args.filter = -1;
