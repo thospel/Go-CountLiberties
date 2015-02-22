@@ -59,6 +59,7 @@ die "Could not parse your command line. Try $0 -h\n" unless
                "generalize!"	=> \$signatures,
                "dump!"		=> \my $dump,
                "debug_history!"	=> \my $debug_history,
+               "debug_max_size!"=> \my $show_max_size,
                "history_bits=o" => \my $history_bits,
                "quiet"		=> \my $quiet,
                "version!"	=> \my $version,
@@ -256,7 +257,7 @@ printf("%s revision %s, parent %s\n",
        Go::CountLiberties->current_revision, Go::CountLiberties->parent_revision) if !$quiet;
 for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                 @ARGV == 1 ? $ARGV[0] :
-                1..19) {
+                1..Go::CountLiberties->max_height) {
     printf("Height = %2d, %dx%d will be in [%d, %d], %d thread%s\n",
            $height, $height, $height,
            lower_bound($height, $height), int((2*$height*$height+2)/3),
@@ -511,6 +512,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                     last;
                 }
             }
+            printf("Height %2d: max_size=%5d\n",
+                   $height, $counter->max_size) if $show_max_size;
             $counter->clear;
             ++$sweep;
             $history_bits || last;
@@ -568,6 +571,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         my $nr_liberties = nr_liberties(\@shape);
 
         delete $best_filter[$target_width-1];
+        printf("Height %2d: max_size=%5d\n",
+               $height, $counter->max_size) if $show_max_size;
         $counter->clear;
 
         my $solution_period      = time  - $solution_start;

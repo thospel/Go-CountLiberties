@@ -115,26 +115,26 @@ bool const COST           = true;
 bool const PRUNE_LOOPS  = true;
 
 /*
- Depend on a theorem that says you can't have long lines along the top/bottom
- for boards with height >= 3 (which does not mean you cannot have stones
- on these lines. Towers can reach all the way
- Suppose you have 2 consecutive black on a top (or bottom) row
+ Suppose you have 2 consecutive stones on a top (or bottom) row
  If it is a line not connected to anything else this can only happen if
  height < 3, otherwise it is better to shift the row one down. So from here on
  only consider boards with height >= 3 where the row is connected to another row
- Consider the most left stone on the second row and the most the top row extends
- to the right. If this is to the right of the leftmost connection to the second
- row the cases are:
+ Consider the left-most directly connected stone on the second row and the most
+ the top row extends to the right. If this is to the right of the this left-most
+ connection to the second row the cases are:
 
   1.  There is also a connection to the second row at the extreme right:
       -----                                        -----
       XXXXX  can without any loss (and often gain) XLLLX
       X???X  be changed to                         XXXXX
+
   2.  There is no connection to the second row at the extreme right
+
       2a. The top row extends to the edge of the board
            -----+                                        -----+
            XXXXX|  can without any loss (and often gain) XLLLL|
            X????|  be changed to                         XXXXX|
+
       2b. the top row does not reach to the end so it ends on a liberty
           the end of the top row is not connected down, so also a liberty
           (board height >= 3). So it is of the form:
@@ -146,10 +146,12 @@ bool const PRUNE_LOOPS  = true;
                ------                                   ------
                XXXXXL Can never be optimal compared to  XXXXLL
                X???LX                                   X???LX
+
           2b2. Empty at the bottom right
                ------                                   ------
                XXXXXL Can without loss (and often gain) XLLLL?
                X???LE be changed to                     XXXXXL
+
           2b3. Liberty at the bottom right. This liberty must come from contact
                with a stone (so we can extend that stone)
                ------                                   ------
@@ -158,7 +160,7 @@ bool const PRUNE_LOOPS  = true;
 
  So any extension to the right of the top row can be removed
  By symmetry any extension to the left can be removed too. So the only way
- the top (or bottom) row need to be reached is as a column of width 1:
+ the top (or bottom) row maybe need to be reached is as a column of width 1:
            ---
             X
             X
@@ -181,7 +183,7 @@ bool const PRUNE_LOOPS  = true;
            LLL
             XX
  So the second thing PRUNE_SIDES does is:
-   B. if a liberty on the top of bottom row, don't put a stone to the right
+   B. if a liberty on the top or bottom row, don't put a stone to the right
 
  Both rules only apply if height >= 3. Since we will only apply them in _process
  when direction > 0 or direction < 0 we can ignore height == 1 (only called with
@@ -1152,7 +1154,8 @@ class CountLiberties {
         int x_, y_;
     };
 
-    static size_t get_memory() HOT;
+    static size_t get_memory();
+    static auto max_height() { return EXPANDED_SIZE; }
 
     CountLiberties(int height, uint nr_threads = 1, bool save_thread = true);
     ~CountLiberties();
@@ -1165,6 +1168,7 @@ class CountLiberties {
     auto max_real_max() const { return max_real_max_; }
     auto real_max() const { return old_real_max_; }
     auto real_min() const { return old_min_+1; }
+    auto max_size() const { return max_size_+1; }
 
     void sym_compress(CompressedColumn& compressed, int index, int rindex) const HOT;
 
@@ -1351,6 +1355,7 @@ class CountLiberties {
     size_t threads_arena_backbone_;
     size_t threads_arena_allocated_;
     EntrySet::value_type* threads_arena_;
+    size_t max_size_;
     // Reversed is a threads shared non atomic variable unprotected by any lock
     // We only ever will use it if there is only one column in the current
     // EntrySets, in which case only one thread will have updated it
@@ -1372,26 +1377,26 @@ class CountLiberties {
         uint size  = 0;
     };
     mutable std::vector<Size> sizes_;
-    //  1:     3
-    //  2:     6
-    //  3:     4
-    //  4:     6
-    //  5:     7
-    //  6:    11
-    //  7:    17
-    //  8:    32
-    //  9:    42
-    // 10:    83
-    // 11:   135
-    // 12:   235
-    // 13:   417
-    // 14:   771
-    // 15:  1259
-    // 16:  2485
-    // 17:  4387
-    // 18:  8135
-    // 19: 14814
-    // 20: 28106
+    // Height  1: max_size=    4
+    // Height  2: max_size=    7
+    // Height  3: max_size=    5
+    // Height  4: max_size=    7
+    // Height  5: max_size=    8
+    // Height  6: max_size=   11
+    // Height  7: max_size=   14
+    // Height  8: max_size=   27
+    // Height  9: max_size=   29
+    // Height 10: max_size=   72
+    // Height 11: max_size=   82
+    // Height 12: max_size=  234
+    // Height 13: max_size=  250
+    // Height 14: max_size=  762
+    // Height 15: max_size=  767
+    // Height 16: max_size= 2435
+    // Height 17: max_size= 2464
+    // Height 18: max_size= 7811
+    // Height 19: max_size= 8156
+    // Height 20: max_size=27109
     std::vector<int> indices0_;
 };
 
@@ -2033,13 +2038,12 @@ void CountLiberties::call_signature(ThreadData& thread_data) {
     thread_data.result = signature;
 }
 
-// size_t max_max = 0;
 auto CountLiberties::signature() -> uint64_t {
     threads_.signature();
 
     auto* indices0 = &indices0_[0];
 
-    uint max = nr_keys(0);
+    size_t max = nr_keys(0);
     auto* sizes = &sizes_[0];
     for (int i = 0; i <= max_entries_; ++i) {
         auto size = nr_keys(i);
@@ -2063,7 +2067,7 @@ auto CountLiberties::signature() -> uint64_t {
     if (max) {
         // Process counting results to get a sorted list
         ++max;
-        // if (max > max_max) max_max = max;
+        if (max > max_size_) max_size_ = max;
         // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
         uint accu = 0;
         for (uint i=0; i < max; ++i) {
@@ -2116,12 +2120,14 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
 
     // Maximum over all indices
     uint64_t full_liberties = current_full_liberties_;
+    // std::cout << "Full: raw liberties=" << full_liberties << " (libs=" << full_liberties+offset_ << ")\n";
     for (auto const& element: *map) {
         auto entry = element.entry;
         uint64_t liberties{entry.liberties()};
 
         if (liberties <= full_liberties) {
             auto libs = liberties + entry.nr_empty(index_mask);
+            // std::cout << "Entry " << column_string(entry, index) << " raw liberties " << liberties << ", libs=" << libs << "\n";
             if (libs < full_liberties) continue;
             if (libs == full_liberties && !equal(entry, full_entry_))
                 continue;
@@ -3035,7 +3041,7 @@ int CountLiberties::run_round(int x, int pos) {
     bool const final = pos == height()-1;
     int i = pos >> 1;
     int pos_left, bits, rbits;
-    EntryVector::size_type max = 0;
+    size_t max = 0;
     int limit = max_entries_;
     if ((pos & 1) == 0 && !final) {
         // even, work from top down
@@ -3225,10 +3231,10 @@ int CountLiberties::run_round(int x, int pos) {
     // on current computers max is pretty restricted (e.g. it is only 14814 for
     // a 19x19 board and the growth factor is still below 2).
     ++max;
-    //if (max > max_max) {
-    //    std::cout << "max_max=" << max_max << std::endl;
-    //    max_max = max;
-    //}
+    if (max > max_size_) {
+        //    std::cout << "max_max=" << max_max << std::endl;
+        max_size_ = max;
+    }
     // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
     uint accu = 0;
     for (EntryVector::size_type i=0; i < max; ++i) {
@@ -3367,8 +3373,7 @@ void CountLiberties::new_round() {
 }
 
 void CountLiberties::clear() {
-    // if (max_max) std::cout << height() << ": max_max=" << max_max << std::endl;
-    // max_max = 0;
+    max_size_ = 0;
     for (auto& entry: entries_)
         entry.clear();
     record_.clear();
@@ -3477,6 +3482,7 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
 
     clear();
 
+    // reserve_thread_maps(28106);
     threads_.start(this);
 }
 
@@ -3952,6 +3958,9 @@ CountLiberties::real_max()
 UV
 CountLiberties::real_min()
 
+UV
+CountLiberties::max_size()
+
 int
 CountLiberties::_offset()
 
@@ -4008,6 +4017,14 @@ CountLiberties::vector_size()
     PERL_UNUSED_VAR(CLASS);
     std::vector<int> dummy;
     RETVAL = sizeof(dummy);
+  OUTPUT:
+    RETVAL
+
+static UV
+CountLiberties::max_height()
+  CODE:
+    PERL_UNUSED_VAR(CLASS);
+    RETVAL = CountLiberties::max_height();
   OUTPUT:
     RETVAL
 
