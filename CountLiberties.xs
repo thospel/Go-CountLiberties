@@ -1319,9 +1319,9 @@ class CountLiberties {
     int const height_ CACHE_ALIGNED;
     int const nr_classes_;
     std::vector<EntryVector> entries_;
-    std::vector<int> reverse_bits_;
-    std::vector<uint64_t> index_masks_;
-    std::vector<int> indices_;
+    int* reverse_bits_ = nullptr;
+    uint64_t* index_masks_ = nullptr;
+    int* indices_ = nullptr;
     EntryVector entry00_;
 
     // Stuff not accessed from within a thread or constant during a thread
@@ -1346,15 +1346,15 @@ class CountLiberties {
     uint new_min_;
     uint filter_need_;
     int target_width_;
-    int max_entries_;
+    int max_entries_ = 0;
     float map_load_multiplier_;
     float backbone_load_multiplier_;
     size_t max_map_;
     size_t max_backbone_;
-    size_t threads_arena_map_;
-    size_t threads_arena_backbone_;
-    size_t threads_arena_allocated_;
-    EntrySet::value_type* threads_arena_;
+    size_t threads_arena_map_ = 0;
+    size_t threads_arena_backbone_ = 0;
+    size_t threads_arena_allocated_ = 0;
+    EntrySet::value_type* threads_arena_ = nullptr;
     size_t max_size_;
     // Reversed is a threads shared non atomic variable unprotected by any lock
     // We only ever will use it if there is only one column in the current
@@ -1376,7 +1376,7 @@ class CountLiberties {
         int  index = 0;
         uint size  = 0;
     };
-    mutable std::vector<Size> sizes_;
+    Size* sizes_ = nullptr;
     // Height  1: max_size=    4
     // Height  2: max_size=    7
     // Height  3: max_size=    5
@@ -2694,11 +2694,10 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
     args.old_min = old_min_;
     args.pos     = pos;
 
-    auto const* indices = &indices_[0];
     while (true) {
         int i = threads_.get_work();
         if (i < 0) break;
-        int j = indices[i];
+        int j = indices_[i];
 
         // std::cout << "call_down\n";
         args.index0  = j;
@@ -2725,9 +2724,6 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
 void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     int bits  = 1 << pos;
 
-    auto const* indices = &indices_[0];
-    auto const* reverse_bits = &reverse_bits_[0];
-
     auto map0 = &thread_data[0];
     auto map1 = &thread_data[1];
 
@@ -2742,8 +2738,8 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     while (true) {
         int i = threads_.get_work();
         if (i < 0) break;
-        int j  = indices[i];
-        int rj = reverse_bits[j];
+        int j  = indices_[i];
+        int rj = reverse_bits_[j];
 
         // std::cout << "call_sym_final\n";
         assert(j <= rj);
@@ -2787,9 +2783,6 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
 
     assert(bits > rbits);
 
-    auto const* indices = &indices_[0];
-    auto const* reverse_bits = &reverse_bits_[0];
-
     auto map0 = &thread_data[0];
     auto map1 = &thread_data[1];
     auto map2 = &thread_data[2];
@@ -2803,8 +2796,8 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
     while (true) {
         int i = threads_.get_work();
         if (i < 0) break;
-        int j  = indices[i];
-        int rj = reverse_bits[j];
+        int j  = indices_[i];
+        int rj = reverse_bits_[j];
 
         if (j == rj) {
             // std::cout << "call_asym j==rj, direction=" << direction << "\n";
@@ -3195,10 +3188,15 @@ int CountLiberties::run_round(int x, int pos) {
         // current_full_liberties_ = 0;
         // In principle we should set current_full_liberties_ 0 in case
         // there is no full column. But the PRUNE_SIDES option will quite often
-        // prune a bumpy full column. Still, without the pruning we would get a
-        // full column at least as good as the previous one. So instead just
-        // keep the last liberties limit. Also keep the column itself so we
-        // won't prune any full column
+        // prune a bumpy full column. We can however safely keep the current
+        // value as a cutoff since liberties can only go up and any column that
+        // loses enough EMPTYs to hit the cutoff did not actually reach its
+        // potential and should have been pruned (though we didn't know it at
+        // the time)
+        // A few columns that could have been pruned in the just executed group
+        // might slip through since we processed the group with the old
+        // current_full_liberties. They never seem to grow to a big set so
+        // it's not worth killing them
         current_full_liberties_ = full_liberties_[vertex-1];
         size_t full_index = nr_classes()-1;
         for (auto const& entry: entries_[full_index]) {
@@ -3438,13 +3436,8 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     height_{height},
     nr_classes_{1 << height_},
     threads_{nr_threads, save_thread},
-    max_entries_{0},
     map_load_multiplier_{1. / MAP_LOAD_FACTOR},
-    backbone_load_multiplier_{1. / BACKBONE_LOAD_FACTOR},
-    threads_arena_map_{0},
-    threads_arena_backbone_{0},
-    threads_arena_allocated_{0},
-    threads_arena_{nullptr}
+    backbone_load_multiplier_{1. / BACKBONE_LOAD_FACTOR}
 {
     // std::cout << "height=" << height_ << "\n";
     if (height > EXPANDED_SIZE)
@@ -3455,8 +3448,8 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
         throw std::out_of_range
             ("Height " + std::to_string(height) + " is below 0");
 
-    reverse_bits_.resize(nr_classes());
-    index_masks_.resize(nr_classes());
+    reverse_bits_ = new int[nr_classes()];
+    index_masks_  = new uint64_t[nr_classes()];
     for (int i = 0; i < nr_classes(); ++i) {
         int bits = i;
         int reverse = 0;
@@ -3473,8 +3466,8 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     entry00_.reserve(1);
     // One extra to hold the empty column injector
     entries_.resize(nr_classes()+1);
-    sizes_  .resize(nr_classes());
-    indices_.resize(nr_classes());
+    sizes_   = new Size[nr_classes()];
+    indices_ = new int [nr_classes()];
     // 100 is an arbitrary starting point to the exponential resizes
     // Avoid the need of many small initial steps before serious progress
     indices0_.resize(100);
@@ -3491,6 +3484,10 @@ CountLiberties::~CountLiberties() {
         free(threads_arena_);
     } else
         delete[] threads_arena_;
+    delete[] indices_;
+    delete[] sizes_;
+    delete[] index_masks_;
+    delete[] reverse_bits_;
 }
 
 class je_malloc_stats {
