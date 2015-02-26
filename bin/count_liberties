@@ -552,8 +552,9 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                 $reversed = ($reversed xor $counter->reversed);
                 # print "pos=$y0 $column $reversed $counter->filter($x-1, $y-1)\n";
                 # print "[$x, $y] ", Dumper({ $counter->key_values}) if $target_width == 1;
-
-                $counter->nr_keys == 1 || die "nr_keys at [$x,$y] should be 1";
+                # print Dumper({ $counter->key_values}) if $dump;
+                my $nr_keys = $counter->nr_keys;
+                $nr_keys == 1 || die "nr_keys at [$x,$y] should be 1, not $nr_keys";
                 # ($column) = $counter->keys;
             }
             if ($x != $target_width && !$counter->no_solution && $counter->maximum == $max[$x-1] && $best_filter[$x-1]) {

@@ -1269,7 +1269,7 @@ class CountLiberties {
     void call_sym_final(int pos, ThreadData& thread_data) HOT;
     void call_asym_final(int pos, ThreadData& thread_data) HOT;
 
-    void inject(int direction, Args args, ThreadData& thread_data) HOT;
+    void inject(int direction, Args args, ThreadData& thread_data, int index, int up) HOT;
     void process(int direction, Args const args, ThreadData& thread_data) HOT;
     void process_down(Args const args, ThreadData& thread_data) HOT;
     void process_up(Args const args, ThreadData& thread_data) HOT;
@@ -1981,7 +1981,6 @@ void CountLiberties::CompressedColumn::expand(Column& expanded,
                                               int from, int height) const {
     int from_mask = ~from << 2;
     auto value = column();
-    height *= 8 / BITS_PER_VERTEX;
     for (int i = 0; i < height; ++i) {
         expanded[i] = (from_mask & 0x4) | (value & STONE_MASK);
         from_mask >>= 1;
@@ -2346,7 +2345,12 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
 // But I am unable to prove that this is so for column positions < 3. So I leave
 // this method in. The slowdown this causes is extremely minor anyways
 void CountLiberties::inject(int direction, Args args,
-                            ThreadData& thread_data) {
+                            ThreadData& thread_data, int index, int up) {
+    map_reserve(args.map1, 1 + entries_[index].size());
+    EntrySet::value_type* result;
+    for (auto entry: entries_[index])
+        args.map1->insert(entry, result);
+
     if      (direction < 0) _process(true, -1, args, 0, false, thread_data);
     else if (direction > 0) _process(true,  1, args, 0, false, thread_data);
     else                    _process(true,  0, args, 0, false, thread_data);
@@ -2366,6 +2370,7 @@ void CountLiberties::inject(int direction, Args args,
         entries_[nr_classes()].reserve(1);
         entries_[nr_classes()].swap(entry00_);
     }
+    entry_transfer(thread_data, args.map1, index, args.pos, up, false);
 }
 
 ALWAYS_INLINE
@@ -2693,6 +2698,7 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
     args.record  = thread_data.record;
     args.old_min = old_min_;
     args.pos     = pos;
+    args.index0  = -1;
 
     while (true) {
         int i = threads_.get_work();
@@ -2707,10 +2713,9 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
 
         size_t grow = entries_[j].size() + entries_[j+bits].size();
         map_reserve(map0, grow);
-        map_reserve(map1, grow+1);
+        map_reserve(map1, grow);
 
         process_down(args, thread_data);
-        if (j == 0) inject(1, args, thread_data);
 
         // If neighbour the given position is a guaranteed LIBERTY
         // Consider only the up direction since the bump is not down yet
@@ -2718,6 +2723,8 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
         entry_transfer(thread_data, map0, j,      pos, neighbour, false);
         entry_transfer(thread_data, map1, j+bits, pos, false,     false);
     }
+    if (args.index0 == 0 && entries_[nr_classes()].size())
+        inject(1, args, thread_data, bits, false);
     // std::cout << "end" << std::endl;
 }
 
@@ -2734,6 +2741,7 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     args.record  = thread_data.record;
     args.old_min = old_min_;
     args.pos     = pos;
+    args.index0  = -1;
 
     while (true) {
         int i = threads_.get_work();
@@ -2757,10 +2765,9 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
 
         size_t grow = entries_[j].size() + entries_[j+bits].size();
         map_reserve(map0, grow);
-        map_reserve(map1, grow+1);
+        map_reserve(map1, grow);
 
         process_final(args, thread_data);
-        if (j == 0) inject(0, args, thread_data);
 
         // Consider both directions since the bump is getting straightened here.
         int neighbours = ~(j << 1 | j >> 1) & bits;
@@ -2772,6 +2779,8 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
         //     entry_clear(rj+bits);
         // }
     }
+    if (args.index0 == 0 && entries_[nr_classes()].size())
+        inject(0, args, thread_data, bits, false);
     // std::cout << "end" << std::endl;
 }
 
@@ -2792,6 +2801,7 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
     args.record  = thread_data.record;
     args.old_min = old_min_;
     args.pos     = pos;
+    args.index0  = -1;
 
     while (true) {
         int i = threads_.get_work();
@@ -2804,8 +2814,8 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
 
             size_t grow1 = entries_[j].size() + entries_[j+bits].size();
             size_t grow2 = entries_[j+rbits].size() + entries_[j+cbits].size();
-            map_reserve(map1, grow1 + grow2 + 1);
-            map_reserve(map0, grow1+1);
+            map_reserve(map1, grow1 + grow2);
+            map_reserve(map0, grow1);
 
             args.map0    = map0;
             args.map1    = map1;
@@ -2815,7 +2825,6 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             args.rindex1 = rj+rbits;
 
             process_asym(direction, args, thread_data);
-            if (j == 0) inject(direction, args, thread_data);
 
             int neighbour = ~(j >> 1) & bits;
             entry_transfer(thread_data, map0, j, pos, neighbour, neighbour);
@@ -2913,6 +2922,16 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
             entry_clear(rj+cbits);
         }
         entry_transfer(thread_data, map0, j+cbits, pos, false, false);
+    }
+    if (args.index0 == rbits && entries_[nr_classes()].size()) {
+        args.map0    = map0;
+        args.map1    = map1;
+        args.index0  = 0;
+        args.index1  = bits;
+        args.rindex0 = 0;
+        args.rindex1 = rbits;
+
+        inject(direction, args, thread_data, rbits, bits & direction);
     }
     // std::cout << "end" << std::endl;
 }
@@ -3156,7 +3175,8 @@ int CountLiberties::run_round(int x, int pos) {
         std::cout <<
             "Unsorted Width=" << nr_classes() <<
             ", ttop=" << sizes - &sizes_[0] <<
-            ", bits=" << bits << ", rbits=" << rbits << ", full=" << limit << "\n";
+            ", bits=" << bits << ", rbits=" << rbits <<
+            ", full=" << limit << ",x=" << x << "\n";
         for (auto s = &sizes_[0]; s < sizes; ++s)
             std::cout << "    index " << s->index << ": size " << s->size << "\n";
     }
@@ -3170,6 +3190,7 @@ int CountLiberties::run_round(int x, int pos) {
     size_t vertex = x * height() + pos+1;
     current_full_liberties_ = full_liberties_[vertex-1];
     if (sizes[-1].index == limit && sizes >= &sizes_[2]) {
+        if (sizes[-1].index == 0) fatal("We should never hit 0");
         if (current_full_liberties_) {
             if (current_full_liberties_ > offset_ +1)
                 current_full_liberties_ = current_full_liberties_ - (offset_ +1);
@@ -3234,6 +3255,17 @@ int CountLiberties::run_round(int x, int pos) {
         max_size_ = max;
     }
     // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
+
+    if (x < 2 && entries_[nr_classes()].size()) {
+        // Move index 0 to the start of the sizes array
+
+        if (sizes == sizes_) fatal("Must have at least 1 entry");
+        if (sizes_[0].index) fatal("Bottom sizes must have index 0");
+        --indices0[sizes_[0].size];
+        sizes_[0].size = 0;
+        ++indices0[0];
+    }
+
     uint accu = 0;
     for (EntryVector::size_type i=0; i < max; ++i) {
         auto tmp = indices0[i];
@@ -3247,6 +3279,17 @@ int CountLiberties::run_round(int x, int pos) {
     std::memset(indices0, 0, max*sizeof(indices0[0]));
 
     int ttop = sizes - &sizes_[0];
+    if (false) {
+        std::cout <<
+            "Sorted Width=" << nr_classes() <<
+            ", ttop=" << ttop <<
+            ", bits=" << bits << ", rbits=" << rbits <<
+            ", full=" << limit << ", x=" << x << "\n";
+        auto i = ttop;
+        while (--i >= 0)
+            std::cout << "    index " << indices[i] << "\n";
+    }
+
     uint threads = threads_.execute(this, ttop);
 
     max_entries_ = 0;
@@ -3377,7 +3420,7 @@ void CountLiberties::clear() {
     record_.clear();
 
     // Notice we do NOT clear the filter since we probably want to run again
-    // using the new filter bits. To clear the filter call clear_filter()
+    // using the new filter bits. To clear the filter call
 
     // We also do NOT clear the full_column_ vector since with the extra filter
     // the full column can have less liberties than the real full column without
