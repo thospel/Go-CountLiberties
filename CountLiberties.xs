@@ -2347,9 +2347,20 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
 void CountLiberties::inject(int direction, Args args,
                             ThreadData& thread_data, int index, int up) {
     map_reserve(args.map1, 1 + entries_[index].size());
+    // We could optimize this.
+    // If there already is an entry in entries_[index] it will always prune the
+    // entry created by inject EXCEPT on the second column along the sides
+    // Since our caller however filters the left corners for height >= 3 even
+    // this can only happen for height 1 and 2 boards. But there is at most 1
+    // entry in entries_[index] anyways and this code never even triggers after
+    // column 2. There is no point in making the code more fragile for a speedup
+    // that can hardly even be measured for any interesting board size
     EntrySet::value_type* result;
-    for (auto entry: entries_[index])
+    // std::cout << "Inject in:\n";
+    for (auto entry: entries_[index]) {
+        // std::cout << " Entry " << column_string(entry, index) << " raw libs=" << entry.liberties() << "\n";
         args.map1->insert(entry, result);
+    }
 
     if      (direction < 0) _process(true, -1, args, 0, false, thread_data);
     else if (direction > 0) _process(true,  1, args, 0, false, thread_data);
@@ -2371,6 +2382,10 @@ void CountLiberties::inject(int direction, Args args,
         entries_[nr_classes()].swap(entry00_);
     }
     entry_transfer(thread_data, args.map1, index, args.pos, up, false);
+    //std::cout << "Inject out:\n";
+    //for (auto entry: entries_[index])
+    //    std::cout << " Entry " << column_string(entry, index) << " raw libs=" << entry.liberties() << "\n";
+    //std::cout << std::endl;
 }
 
 ALWAYS_INLINE
