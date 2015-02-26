@@ -1133,7 +1133,7 @@ class CountLiberties {
 
     struct Args {
         EntrySet *map0, *map1;
-        uint pos;
+        int pos;
         uint index0, rindex0;
         uint index1, rindex1;
         int filter, record;
@@ -2686,7 +2686,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 }
 
 void CountLiberties::call_down(int pos, ThreadData& thread_data) {
-    int bits  = 1 << pos;
+    uint bits  = 1 << pos;
 
     auto map0 = &thread_data[0];
     auto map1 = &thread_data[1];
@@ -2729,7 +2729,7 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
 }
 
 void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
-    int bits  = 1 << pos;
+    uint bits  = 1 << pos;
 
     auto map0 = &thread_data[0];
     auto map1 = &thread_data[1];
@@ -2786,9 +2786,9 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
 
 ALWAYS_INLINE
 void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data) {
-    int  bits = 1 << pos;
-    int rbits = 1 << (height() - 1 - pos);
-    int cbits = bits + rbits;
+    uint  bits = 1 << pos;
+    uint rbits = 1 << (height() - 1 - pos);
+    uint cbits = bits + rbits;
 
     assert(bits > rbits);
 
@@ -3021,16 +3021,6 @@ int CountLiberties::run_round(int x, int pos) {
     int filter = x < target_width() ? filter_[x].at(pos) :  0;
     int record = x < target_width() ? record_map_[x].at(pos) : -1;
 
-    // Turn off injection for column positions >= 3
-    // (counting from 1, x counts from 0, so the test is x >= 2)
-    // It's easy to prove that if there is a solution where the first stone is
-    // in column 3, there is at least as good a solution with a stone in column
-    // 2, so after this point we don't need to inject empty columns anymore
-    // Easier way to see it: A full column on column 2 after an empty on column
-    // 1 already has height() liberties. Empty up to column 2 can at most equal
-    // that
-    if (x >= 2) entries_[nr_classes()].clear();
-
     for (auto& thread_data: threads_) {
         thread_data.max_entry = Entry::invalid();
         thread_data.real_max = new_real_max_;
@@ -3064,25 +3054,8 @@ int CountLiberties::run_round(int x, int pos) {
         bits  = 1 << pos_left;
         rbits = -1;
 
-        {
-            int j = 0;
-            auto size = nr_keys(j) + nr_keys(j + bits);
-            size += entries_[nr_classes()].size();
-            if (size) {
-                sizes->index = j;
-                sizes->size  = size;
-                ++sizes;
-                max = size;
-                if (max >= indices0_.size()) {
-                    indices0_.resize(2*max);
-                    indices0 = &indices0_[0];
-                }
-                // if (size >= indices0_.size()) fatal("out of bounds");
-                ++indices0[size];
-            }
-        }
         if (limit & bits) limit = (limit & ~bits) | (bits-1);
-        for (int j=1; j<=limit; ++j) {
+        for (int j=0; j<=limit; ++j) {
             if (j & bits) continue;
             auto size = nr_keys(j) + nr_keys(j + bits);
             if (size) {
@@ -3121,28 +3094,9 @@ int CountLiberties::run_round(int x, int pos) {
         }
 
         auto const* reverse_bits = &reverse_bits_[0];
-        {
-            int j = 0;
-            size_t size = nr_keys(j) + nr_keys(j+bits);
-            size += entries_[nr_classes()].size();
-            if (bits != rbits)
-                size += nr_keys(j+rbits) + nr_keys(j+cbits);
-            if (size) {
-                sizes->index = j;
-                sizes->size  = size;
-                ++sizes;
-                max = size;
-                if (max >= indices0_.size()) {
-                    indices0_.resize(2*max);
-                    indices0 = &indices0_[0];
-                }
-                // if (size >= indices0_.size()) fatal("out of bounds");
-                ++indices0[size];
-            }
-        }
         if (limit & bits)  limit = (limit & ~ bits) |  (bits-1);
         if (limit & rbits) limit = (limit & ~rbits) | (rbits-1);
-        for (int j=1; j<=limit; ++j) {
+        for (int j=0; j<=limit; ++j) {
             if (j & cbits) continue;
             int rj = reverse_bits[j];
             if (j > rj) continue;
@@ -3171,10 +3125,47 @@ int CountLiberties::run_round(int x, int pos) {
         limit = (nr_classes() - 1) & ~cbits;
     }
 
+    // Turn off injection for column positions >= 3
+    // (counting from 1, x counts from 0, so the test is x >= 2)
+    // It's easy to prove that if there is a solution where the first stone is
+    // in column 3, there is at least as good a solution with a stone in column
+    // 2, so after this point we don't need to inject empty columns anymore
+    // Easier way to see it: A full column on column 2 after an empty on column
+    // 1 already has height() liberties. Empty up to column 2 can at most equal
+    // that
+    if (entries_[nr_classes()].size()) {
+        if (x >= 2) entries_[nr_classes()].clear();
+        else {
+            if (sizes > sizes_&& sizes_[0].index == 0) {
+                // Move index 0 to the start of the sizes array
+                if (sizes_[0].size >= max) {
+                    max = sizes_[0].size + 1;
+                    if (max >= indices0_.size()) {
+                        indices0_.resize(2*max);
+                        indices0 = &indices0_[0];
+                    }
+                }
+                --indices0[sizes_[0].size];
+                sizes_[0].size = 0;
+            } else {
+                // There is no index 0 yet. Create one
+                sizes->index = 0;
+                sizes->size  = 0;
+                ++sizes;
+                // No need to resize indices0, it starts at size 100
+                if (max <= 0) max = 1;
+            }
+            ++indices0[0];
+        }
+    }
+
+    int ttop = sizes - &sizes_[0];
+    if (ttop == 0) fatal("No work");
+
     if (false) {
         std::cout <<
             "Unsorted Width=" << nr_classes() <<
-            ", ttop=" << sizes - &sizes_[0] <<
+            ", ttop=" << ttop <<
             ", bits=" << bits << ", rbits=" << rbits <<
             ", full=" << limit << ",x=" << x << "\n";
         for (auto s = &sizes_[0]; s < sizes; ++s)
@@ -3189,10 +3180,9 @@ int CountLiberties::run_round(int x, int pos) {
 
     size_t vertex = x * height() + pos+1;
     current_full_liberties_ = full_liberties_[vertex-1];
-    if (sizes[-1].index == limit && sizes >= &sizes_[2]) {
-        if (sizes[-1].index == 0) fatal("We should never hit 0");
+    if (ttop && sizes[-1].index == limit) {
         if (current_full_liberties_) {
-            if (current_full_liberties_ > offset_ +1)
+            if (current_full_liberties_ > offset_ + UINT64_C(1))
                 current_full_liberties_ = current_full_liberties_ - (offset_ +1);
             else
                 current_full_liberties_ = 0;
@@ -3200,6 +3190,7 @@ int CountLiberties::run_round(int x, int pos) {
         // Execute the full column outside any threads
         // This entry can never be very big
         // (trivially <= 32, in reality probably <= 8)
+        --ttop;
         --sizes;
         --indices0[sizes->size];
         indices_[0] = limit;
@@ -3237,7 +3228,7 @@ int CountLiberties::run_round(int x, int pos) {
         current_full_liberties_ = full_liberties_[vertex];
     // std::cout << "Set full to " << current_full_liberties_-1 << " liberties" << ", offset=" << offset_ << std::endl;
     if (current_full_liberties_) {
-        if (current_full_liberties_ > offset_ +1)
+        if (current_full_liberties_ > offset_ + UINT64_C(1))
             current_full_liberties_ = current_full_liberties_ - (offset_ +1);
         else
             current_full_liberties_ = 0;
@@ -3256,16 +3247,6 @@ int CountLiberties::run_round(int x, int pos) {
     }
     // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
 
-    if (x < 2 && entries_[nr_classes()].size()) {
-        // Move index 0 to the start of the sizes array
-
-        if (sizes == sizes_) fatal("Must have at least 1 entry");
-        if (sizes_[0].index) fatal("Bottom sizes must have index 0");
-        --indices0[sizes_[0].size];
-        sizes_[0].size = 0;
-        ++indices0[0];
-    }
-
     uint accu = 0;
     for (EntryVector::size_type i=0; i < max; ++i) {
         auto tmp = indices0[i];
@@ -3278,7 +3259,6 @@ int CountLiberties::run_round(int x, int pos) {
         indices[indices0[s->size]++] = s->index;
     std::memset(indices0, 0, max*sizeof(indices0[0]));
 
-    int ttop = sizes - &sizes_[0];
     if (false) {
         std::cout <<
             "Sorted Width=" << nr_classes() <<
@@ -3290,7 +3270,7 @@ int CountLiberties::run_round(int x, int pos) {
             std::cout << "    index " << indices[i] << "\n";
     }
 
-    uint threads = threads_.execute(this, ttop);
+    uint threads = ttop ? threads_.execute(this, ttop) : 1;
 
     max_entries_ = 0;
     uint t_max = threads;
