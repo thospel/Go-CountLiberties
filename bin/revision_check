@@ -26,6 +26,8 @@ use Scalar::Util qw(looks_like_number);
 use FindBin qw($Script);
 use Carp;
 
+use Digest::SHA;
+
 # Import a complete file and return the contents as a single string
 sub slurp {
     my $file = shift;
@@ -37,6 +39,18 @@ sub slurp {
     croak "Error reading from '$file': $!" if !defined $rc;
     close($fh) || croak "Error while closing '$file': $!";
     return $slurp;
+}
+
+sub hash_files {
+    my $sha1 = Digest::SHA->new(1);
+    my @files = sort shift =~ /^.*$/mg;
+    for my $file (@files) {
+        next if !-f $file;
+        $sha1->add($file . "\0");
+        open(my $fh, "<", $file) || die "Could not open '$file': $!";
+        $sha1->addfile($fh);
+    }
+    return $sha1->hexdigest;
 }
 
 sub indent {
@@ -122,16 +136,32 @@ while (my $line = <$fh>) {
         last;
     }
 }
+
 $compiled_revision ||= "unknown";
 chomp $compiled_revision;
 
-$fh = undef;
-open($fh, "-|", "mtn", "automate", $parent ?
-     "get_base_revision_id" : "get_current_revision_id") ||
-    die "Could not fork: $!";
+# my $revision_system = "monotone";
+my $revision_system = "git";
+
+my $revision_commands = {
+    monotone => {
+        files => "mtn list known",
+        # clean => "mtn list changed",
+        base  => "mtn automate get_base_revision_id",
+    },
+    git => {
+        files => "git ls-files",
+        # clean => "git diff-index --quiet HEAD --",
+        base  => "git rev-parse HEAD",
+    },
+}->{$revision_system};
+
+my @command = split " ", $revision_commands->{$parent ? "base" : "files"} || "" or die "No command";
+open($fh = undef, "-|", @command) || die "Could not fork: $!";
 my $current_revision = do { local $/; <$fh> };
 close($fh);
-die "Unexpected exit code from mtn: $?" if $? && $? != -1;
+die "Unexpected exit code from @command: $?" if $? && $? != -1;
+$current_revision = hash_files($current_revision) if !$parent;
 $current_revision ||= "unknown";
 chomp $current_revision;
 
@@ -140,27 +170,26 @@ exit if $current_revision eq $compiled_revision;
 
 # Ok, things changed. Generate a new revision file
 
-undef $fh;
-open($fh, "-|", "mtn", "automate", "get_base_revision_id") ||
-    die "Could not fork: $!";
+@command = split " ", $revision_commands->{base} || "" or die "No command";
+open($fh = undef, "-|", @command) || die "Could not fork: $!";
 my $parent_revision = do { local $/; <$fh> };
 close($fh);
-die "Unexpected exit code from mtn: $?" if $? && $? != -1;
+die "Unexpected exit code from @command: $?" if $? && $? != -1;
 $parent_revision = "unknown" if
     !defined $parent_revision || $parent_revision eq "";
 chomp $parent_revision;
 
-$fh = undef;
-open($fh, "-|", "mtn", "automate", "get_current_revision_id") ||
-    die "Could not fork: $!";
+@command = split " ", $revision_commands->{files} || "" or die "No command";
+open($fh = undef, "-|", @command) || die "Could not fork: $!";
 $current_revision = do { local $/; <$fh> };
 close($fh);
-die "Unexpected exit code from mtn: $?" if $? && $? != -1;
-$current_revision = "unknown" if
-    !defined $current_revision || $current_revision eq "";
+die "Unexpected exit code from @command: $?" if $? && $? != -1;
+if (!defined $current_revision || $current_revision eq "") {
+    $current_revision = "unknown";
+} else {
+    $current_revision = hash_files($current_revision);
+}
 chomp $current_revision;
-
-my $revision_system = "monotone";
 
 my ($sec, $min, $hour, $mday, $mon, $year) = gmtime;
 my $compile_date = sprintf("%04d%02d%02d", $year+1900, $mon+1, $mday);
@@ -178,11 +207,11 @@ eval {
     print($fh replace(
         "$data_file.in",
         {
-            REVISION_SYSTEM		=> $revision_system,
-            PARENT_REVISION		=> $parent_revision,
+            REVISION_SYSTEM	=> $revision_system,
+            PARENT_REVISION	=> $parent_revision,
             CURRENT_REVISION	=> $current_revision,
-            COMPILE_DATE		=> $compile_date,
-            COMPILE_TIME		=> $compile_time,
+            COMPILE_DATE	=> $compile_date,
+            COMPILE_TIME	=> $compile_time,
         })) || die "Could not write to '$tmp_file': $!";
     close($fh) || die "Could not close '$tmp_file': $!";
     rename($tmp_file, $data_file) ||

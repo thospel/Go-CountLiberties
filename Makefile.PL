@@ -69,7 +69,7 @@ WriteMakefile
          1;
      } ? (BUILD_REQUIRES	=> {
          # Needed to build BoardMove.cpp. Maybe include in the distro
-         "Text::Expand"	=>	"1.000",
+         "Digest::SHA"	=>	"1.000",
          # Only for the tests
 	 "Test::More"		=> "0.01",
      }) : (),
@@ -79,7 +79,7 @@ WriteMakefile
      LD			=> '$(CC)',
      # -C++ doesn't do anything, but we need -hiertype for C++ types with ::
      XSOPT		=> "-C++ -hiertype",
-     LIBS		=> [''],
+     LIBS		=> ['-latomic'],
      INC		=> '-I include',
      depend		=> {
          '$(O_FILES)'	=> "include/ppport.h include/constants.hpp include/vector.hpp",
@@ -155,6 +155,10 @@ undef &postamble;	## no critic (UselessNoCritic AmpersandSigils)
 
 BEGIN {
     package MY;
+
+    *test_via_script = \&ExtUtils::MM_Any::test_via_script;
+    *test_via_harness = \&ExtUtils::MM_Any::test_via_harness;
+
     sub constants {
         my $self = shift;
         # Remove any test files
@@ -191,6 +195,11 @@ $(XS_FILES): include/ppport.h
 	$(PERLRUN) -e 'for (@ARGV) { local $$/; open(my $$in, "<", "$$_.patched") || die "Could not open \x27$$_.patched\x27: $$!"; my $$content = <$$in>; 1 || $$content =~ s{\Q#include "ppport.h"\E\n}{}; close($$in) || die "Error closing \x27$$_.patched\x27: $$!"; open(my $$out, ">", "$$_.patched") || die "Could not write to \x27$$_.patched\x27: $$!"; print($$out $$content) || die "Error writing to \x27$$_.patched\x27: $$!"; close($$out) || die "Could not close \x27$$_.patched\x27: $$!"; rename("$$_.patched", $$_) || die "Could not rename \x27$$_\x27 to \x27$$_\x27: $$!"; }' $(XS_FILES)
 EOF
 
+    $postamble{invocation} = <<'EOF';
+invocation.md: bin/count_liberties
+	pod2markdown < bin/count_liberties > invocation.md
+
+EOF
     $postamble{board} = <<'EOF';
 .cpp.s:
 	$(CCCMD) -S -fverbose-asm $(CCCDLFLAGS) "-I$(PERL_INC)" $(PASTHRU_DEFINE) $(DEFINE) $*.cpp

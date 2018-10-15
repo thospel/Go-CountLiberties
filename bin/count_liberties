@@ -35,7 +35,7 @@ use constant {
     EMPTY	=> ".",
 };
 
-my $signatures	= 1;
+my $generalize	= 1;
 my $cost_type	= 0;
 
 my @args = @ARGV;
@@ -56,15 +56,30 @@ die "Could not parse your command line. Try $0 -h\n" unless
                "solution!"	=> \my $solution,
                "map_load_factor=f"	=> \my $map_load_factor,
                "backbone_load_factor=f"	=> \my $backbone_load_factor,
-               "generalize!"	=> \$signatures,
+               "generalize!"	=> \$generalize,
                "dump!"		=> \my $dump,
                "debug_history!"	=> \my $debug_history,
                "debug_max_size!"=> \my $show_max_size,
                "history_bits=o" => \my $history_bits,
                "quiet"		=> \my $quiet,
                "version!"	=> \my $version,
-               "U|unsafe!"	=> \my $unsafe,
                "h|help!"	=> \my $help);
+
+if ($version) {
+    require Go::CountLiberties::Package;
+    ## no critic (UselessNoCritic RequireCheckedSyscalls)
+    print
+        "count_liberties $VERSION (Go::CountLiberties $Go::CountLiberties::Package::VERSION)\n";
+    exit 0;
+}
+if ($help) {
+    require Config;
+    $ENV{PATH} .= ":" unless $ENV{PATH} eq "";
+    $ENV{PATH} = "$ENV{PATH}$Config::Config{'installscript'}";
+    exit system("perldoc", "-F", "$Bin/$Script") ? 1 : 0;
+    # make parser happy
+    %Config::Config = ();
+}
 
 if ($restart) {
     die "Please do not give an explicit --restart\n";
@@ -92,7 +107,9 @@ if ($restart) {
                     last;
                 }
             }
-            die "Could not use any of '@places' for huge page support" if
+            die @places > 1 ?
+                "Could not use any of '@places' for huge page support" :
+                "Could not use '@places' for huge page support" if
                 $hugepages eq "";
         }
         $hugepages =~ s{/*\z}{/};
@@ -172,13 +189,14 @@ if ($restart) {
         $nice ||= 10;
     }
 
-    # print "preload=$ENV{LD_PRELOAD}\n";
+    # print STDERR "preload=$ENV{LD_PRELOAD}\n";
     if ($restart) {
         if (@args && $args[0] eq "--blib") {
             splice(@args, 1, 0, @restart);
         } else {
             unshift @args, @restart;
         }
+        # print STDERR "$^X $Bin/$Script @args\n";
         exec(defined $nice ? ("nice", "-n", $nice || 10) : (), $^X, "$Bin/$Script", @args);
         die "Boem";
     }
@@ -202,25 +220,22 @@ $save_thread = 1 if !defined $save_thread;
 $| = 1;
 
 sub lower_bound {
-    # The shapes that establish these lower bounds are shown at the bottom
+    # The shapes that establish these lower bounds are shown in README.md
     # Hypothesis: These numbers are exact for any board size
     my ($m, $n) = @_;
-    ($m, $n) = ($n, $m) if $m < $n;
-    # So now $m >= $n
-    if ($n >= 4) {
-        return $n*(2*$m-1)/3 if $n % 3 == 0;
+    ($m, $n) = ($n, $m) if $m > $n;
+    # So now $m <= $n
+    if ($m >= 4) {
         return $m*(2*$n-1)/3 if $m % 3 == 0;
-        return ((2*$n-1)*(2*$m-1)+5)/6 if $m % 3 == 1 && $n % 3 == 1;
-        return ((2*$n-1)*(2*$m-1)+3)/6;
-    } elsif ($n == 3) {
-        return 2*$m;
-    } elsif ($n == 2) {
-        return $m == 3 ? 4 : $m;
-    } elsif ($n == 1) {
-        return $m >= 3 ? 2 : $m >= 2 ? 1 : 0;
-    } else {
-        die "Bad call";
+        return $n*(2*$m-1)/3 if $n % 3 == 0;
+        return ((2*$m-1)*(2*$n-1)+5)/6 if $m % 3 == 1 && $n % 3 == 1;
+        return ((2*$m-1)*(2*$n-1)+3)/6; # if $m % 3 == 2 || $n % 3 == 2
     }
+    return 2*$n if $m == 3;
+    return $n == 3 ? 4 : $n if $m == 2;
+    return $n >= 3 ? 2 : $n-1 if $m == 1;
+
+    die "Bad call";
 }
 
 sub nr_liberties {
@@ -273,7 +288,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
     my $total_user_start = times;
 
     my $sweep = 0;
-    my $generalized = !$signatures;
+    my $generalized = !$generalize;
     my (@max, %signatures, @best_column);
 
     my @nr_keys_first =
@@ -608,166 +623,156 @@ if ($jemalloc_debug) {
 
 
 __END__
-Board n x m, m >= n
 
-n=1: (proven)
-   Examples:
-   ***   ***   ***   ***
-   *.*   *O*   *.*   *.*
-   ***   *.*   *O*   *O*
-         ***   *.*   *O*
-               ***   *.*
-                     ***
+=head1 NAME
 
-  General rule:
-    m=1: 0
-    m=2: 1
-    m>2: 2
+count_liberties - Calculate the maximum number of liberties one group on a go board can have
 
-n=2: (proven)
-   Examples:
-   ****   ****   ****   ****   ****
-   *O.*   *O.*   *..*   *O.*   *O.*
-   ****   *O.*   *OO*   *O.*   *O.*
-          ****   *..*   *O.*   *O.*
-                 ****   *O.*   *O.*
-                        ****   *O.*
-                               ****
-  General rule:
-    m =3: 4
-    m!=3: m
+=head1 SYNOPSIS
 
-n=3 (proven)
-   Examples:
-   *****   *****   *****   *****
-   *.O.*   *.O.*   *.O.*   *.O.*
-   *****   *.O.*   *.O.*   *.O.*
-           *****   *.O.*   *.O.*
-                   *****   *.O.*
-                           *****
-  General rule:
-    2m
+  count_liberties --blib <other_options>
+  count_liberties [--solution] [--quiet] [[<min_n>] <maxn>]
+  count_liberties [--save_thread] [-t <threads>] [--threads <threads>] <other_options>
+  count_liberties [--tcmalloc] [--jemalloc] [--llmalloc] [--libcmalloc] [--hugepages [mount_point]] <other_options>
+  count_liberties [map_load_factor <float>] [backbone_load_factor <float>]  <other_options>
+  count_liberties [--generalize] <other_options>
+  count_liberties [--stats] [--dump] <other_options>
+  count_liberties [--sizes] [--debug_max_size] [--debug_history] <other_options>
+  count_liberties [--history_bits <n>] <other_options>
+  count_liberties [--profile [<file>]] <other_options>
+  count_liberties [--nice [<level>]] <other_options>
+  count_liberties [--version] [-h] [--help]
 
-n>=4 (proven for n<=21)
- n=0 (mod 3)
-   Examples:
-   ***********   ***********   ***********   **************
-   *.........*   *.........*   *.........*   *............*
-   *.OOOOOOO.*   *.OOOOOOO.*   *.OOOOOOO.*   *.OOOOOOOOOO.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   *.O..O..O.*   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-   ***********   *.O..O..O.*   *.O..O..O.*   *.O..O..O..O.*
-                 ***********   *.O..O..O.*   *.O..O..O..O.*
-                               ***********   **************
-  (so prefer connecting along the short side)
-  General rule:
-    n(2m-1)/3
+=head1 DESCRIPTION
 
- m=0 (mod 3)
-   Examples:
-   ******   *******   *********   **********
-   *....*   *.....*   *.......*   *........*
-   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
-   *.O..*   *.O...*   *.O.....*   *.O......*
-   *.O..*   *.O...*   *.O.....*   *.O......*
-   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
-   *.O..*   *.O...*   *.O.....*   *.O......*
-   *.O..*   *.O...*   *.O.....*   *.O......*
-   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
-   *.O..*   *.O...*   *.O.....*   *.O......*
-   *.O..*   *.O...*   *.O.....*   *.O......*
-   *.OOO*   *.OOOO*   *.OOOOOO*   *.OOOOOOO*
-   *....*   *.....*   *.......*   *........*
-   ******   *******   *********   **********
+This program calculates the maximum number of liberties a single group can have on a go board of given height. It will output a table and rule which answers this question for any board width. Optionally also gives a sample solution.
 
-  (if the short side side is not a multiple of 3 but the long side is)
-  General rule:
-    m(2n-1)/3
+If no arguments are given it runs for all board heights from 1 to the maximum supported size. With one argument it only runs for that board size. With two arguments it runs for all sizes in the range defined by these arguments.
 
-  n=1 (mod 3) and m=1 (mod 3)
-   Examples:
-   ******   ******   ******   *********   ************
-   *....*   *....*   *....*   *.......*   *..........*
-   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
-   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
-   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
-   *.OOO*   *.OOO*   *.OOO*   *.O..OOO*   *.O..O..OOO*
-   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
-   *.O..*   *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
-   ******   *.OOO*   *.OOO*   *.O..OOO*   *.O..O..OOO*
-            *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
-            *.O..*   *.O..*   *.O..O..*   *.O..O..O..*
-            ******   *.OOO*   *********   ************
-                     *.O..*
-                     *.O..*
-                     ******
-  General rule:
-    (m(2n-1)-n+3)/3 = ((2n-1)(2m-1)+5)/6
+=head1 OPTIONS
 
-  n=1 (mod 3) and m=2 (mod 3)
-   Examples:
-   ******   ******   ******   *********   ************
-   *....*   *....*   *....*   *.......*   *..........*
-   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
-   *.O..*   *.O..*   *.O..*   *.O.....*   *.O........*
-   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
-   *.O..*   *.O..*   *.O..*   *.O.....*   *.O........*
-   *.O..*   *.O..*   *.O..*   *.O.....*   *.O........*
-   *.OOO*   *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
-   *....*   *.O..*   *.O..*   *.O.....*   *.O........*
-   ******   *.O..*   *.O..*   *.O.....*   *.O........*
-            *.OOO*   *.OOO*   *.OOOOOO*   *.OOOOOOOOO*
-            *....*   *.O..*   *.......*   *..........*
-            ******   *.O..*   *********   ************
-                     *.OOO*
-                     *....*
-                     ******
-  General rule:
-    ((2n-1)(2m-1)+3)/6
+=over 4
 
-  n=2 (mod 3) and m!=0 (mod 3)
-   Examples:
-   *******   *******   *******   **********   *************
-   *.....*   *.....*   *.....*   *........*   *...........*
-   *.OOO.*   *.OOO.*   *.OOO.*   *.OOOOOO.*   *.OOOOOOOOO.*
-   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-   *.O.O.*   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-   *******   *.O.O.*   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-             *******   *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-                       *.O.O.*   *.O..O.O.*   *.O..O..O.O.*
-                       *******   **********   *************
-  General rule:
-    ((2n-1)(2m-1)+3)/6;
+=item X<blib>--blib
 
-Alternative ways to implement the m=1 (mod 3) and n=1 (mod 3) case:
-   19 x 19, 229 liberties)
-   *********************   *********************
-   *...................*   *...................*
-   *.OOOOOOOOOOOOOOOOOO*   *.OOOOOOOOOOOOOOOOO.*
-   *.O.................*   *.O..O..O..O..O...O.*
-   *.O.................*   *.O..O..O..O..O...O.*
-   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O.OOO.*
-   *.O.................*   *.O..O..O..O..O...O.*
-   *.O.................*   *.O..O..O..O..O...O.*
-   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O.OOO.*
-   *.O..O.....O.....O..*   *.O..O..O..O..O...O.*
-   *.O..O..O..O..O..O..*   *.O..O..O..O..O...O.*
-   *.O.....O.....O.....*   *.O..O..O..O..O.OOO.*
-   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O...O.*
-   *.O.................*   *.O..O..O..O..O...O.*
-   *.O.................*   *.O..O..O..O..O.OOO.*
-   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O...O.*
-   *.O.................*   *.O..O..O..O..O...O.*
-   *.O.................*   *.O..O..O..O..O.OOO.*
-   *.OOOOOOOOOOOOOOOOOO*   *.O..O..O..O..O...O.*
-   *...................*   *.O..O..O..O..O...O.*
-   *********************   *********************
+Add this option to load libraries from the current compilation directory instead of from the installed libraries. You must give this option if you want to run the current development version before it is installed. This option is not processed normally and must be given before any other options.
+
+=item X<solution>--solution
+
+After working out the maximum number of liberties for a given board height also prints sample groups that reach this number of liberties for all board widths not greater than the height.
+
+This is done by following back a trail of breadcrumbs from the final column to the initital one. However during the forward calculation the old states repeatedly get dropped to save memory. So instead the forward run is repeated again and again using more and more constraints from previous runs to zoom in on an actual solution. Once a solution for a given width is found it is cut on each column and checked if that happens to give a valid solution for a smaller board width. If so that is also printed as an "extra" solution. The program then doesn't have to bother to work out a solution for that board width since we already got one for free. The whole process is repeated until for all widths not larger than the height an example has been generated.
+
+Which solution will be found is not deterministic if there is more than one thread.
+
+=item X<quiet>--quiet
+
+Don't print progress information, only final results
+
+=item X<threads>--threads <threads>, -t <threads>
+
+Run the program with C<threads> processing threads. Defaults to the number of logical CPUs.
+
+=item X<save_thread>--save_thread
+
+If given start up one less new thread and instead also use the main thread as a computation thread.
+
+Defaults to true.
+
+=item X<nice>--nice [level]
+
+Run program under L<nice(1)>. Level defaults to C<10>.
+
+=item X<tcmalloc>--tcmalloc
+
+Use L<tcmalloc|http://goog-perftools.sourceforge.net/doc/tcmalloc.html> as memory allocator.
+
+=item X<jemalloc>--jemalloc
+
+Use L<jemalloc|http://jemalloc.net/> as memory allocator.
+
+=item X<llmalloc>--llmalloc
+
+Use L<llmalloc|https://locklessinc.com/install_linux.shtml> as memory allocator.
+
+=item X<libcmalloc>--libcmalloc
+
+Use standard libc malloc as memory allocator. If this option is not given the program tries to find any of the previously mentioned mallocs and use that. Only if none of them is found does it fall back to standfard libc malloc.
+
+=item X<hugepages>--hugepages [mount_point]
+
+Use L<hugepages|https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt> from hugetlbfs F<mount_point>. If F<mount_point> is not given the program tries to autodetect it.
+
+This option implies L<--tcmalloc|/tcmalloc>
+
+=item X<map_load_factor>--map_load_factor <float>
+
+The load at which an internal datastructure resizes
+
+=item X<backbone_load_factor>--backbone_load_factor <float>
+
+The load at which an internal datastructure resizes
+
+=item X<generalize>--generalize
+
+Once all possibilities for a column repeat the program knows it has found the general ruie for any board width and the pattern will repeat from the first occurance of a column. But even before that column it can happen that the rule turns out to be still valid even if the possibilities for an earlier column where not the same. If this option is true (the default) the rule is presented as starting on the earliest such column.
+
+=item X<stats>--stats
+
+Development option
+
+Print out some information about each inbetween state while a column is moved to the right
+
+=item X<dump>--dump
+
+Development option
+
+Print the possible columns with their liberties
+
+=item X<sizes>--sizes
+
+Development option
+
+Print out the sizes of several C++ objects. Used during development to make sure these objects are laid out as expected.
+
+=item X<debug_max_size>--debug_max_size
+
+Development option
+
+Internally at some point a datastructure needs to be sorted which is done using a counting sort. This prints some helper information to make sure this is an efficient way of sorting.
+
+=item X<debug_history>--debug_history
+
+Development option
+
+Show some information about the breadcrumbs that are left which will allow recovery of a L<solution|/solution>.
+
+=item X<history_bits>--history_bits <n>
+
+Development option
+
+Use some other number of bits to remember breadcrumbs than the builtin value (which will normally be C<16> or C<8>). The value must be between C<1> and the builtin and is used to check that the history/breadcrumbs algorithm can handle other bit values.
+
+=item X<profile>--profile [<file>]
+
+Run the program under the L<google perftools profiler|http://goog-perftools.sourceforge.net/doc/cpu_profiler.html> with F<file> as filename to dump the profile to. Defaults to F<count_liberties.pprof>.
+
+=item X<version>--version
+
+Print version information
+
+=item X<help>--help, -h
+
+Print this help
+
+=back
+
+=head1 BUGS
+
+None known
+
+=head1 SEE ALSO
+
+The inspiration for this code is from John Tromp's L<Number of legal Go positions|https://tromp.github.io/go/legal.html>
+
+=cut

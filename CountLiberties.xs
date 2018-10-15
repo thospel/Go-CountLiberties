@@ -217,7 +217,8 @@ NOINLINE void sys_fatal(std::string message) {
 }
 
 // Only call on unsigned types or be sure that the top it is not set
-ALWAYS_INLINE int clz(auto x) {
+template <class any>
+ALWAYS_INLINE int clz(any x) {
 #ifdef __GNUC__
     if (sizeof(x) == sizeof(unsigned int))
         return __builtin_clz(x);
@@ -338,7 +339,7 @@ class CountLiberties {
 
     class CompressedColumn {
       public:
-        constexpr size_t length() { return COMPRESSED_SIZE; }
+        constexpr size_t length() const { return COMPRESSED_SIZE; }
         uint64_t column() const {
             return _column() >> shift64;
         }
@@ -1288,12 +1289,14 @@ class CountLiberties {
     void _process(bool inject, int direction, Args const args,
                   uint from, bool left_black, ThreadData& thread_data) HOT;
     void reserve_thread_maps(size_t max);
-    void map_reserve(EntrySet* set, auto size) {
+    template <class any>
+    void map_reserve(EntrySet* set, any size) {
         set->reserve(size, map_load_multiplier_);
         if (UNLIKELY(set->used() > max_map_))
             fatal("map overflow used " + std::to_string(set->used()) + " > max_map " + std::to_string(max_map_));
     }
-    void backbone_reserve(EntrySet& set, auto size) {
+    template <class any>
+    void backbone_reserve(EntrySet& set, any size) {
         set.reserve(size, backbone_load_multiplier_);
         if (UNLIKELY(set.used() > max_backbone_)) fatal("backbone overflow");
     }

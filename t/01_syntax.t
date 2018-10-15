@@ -53,7 +53,7 @@ sub check {
 
 $Bin =~ s{/t/?\z}{} || die "No /t at end of $Bin";
 
-for my $script (qw(goth)) {
+for my $script (qw(count_liberties)) {
     ok(!check(
             "-I", "$Bin/blib/lib", "-I", "$Bin/blib/arch",
             "-T",

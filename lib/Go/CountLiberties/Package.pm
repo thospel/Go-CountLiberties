@@ -1,4 +1,4 @@
-package Go::Goth::Package;
+package Go::CountLiberties::Package;
 # $HeadURL: xxx/lib/Go/CountLiberties/Package.pm $
 # $Id: xxx $
 
@@ -8,13 +8,16 @@ use strict;
 use warnings;
 use vars qw($VERSION $SUB_VERSION $release_time %history);
 $VERSION = "1.000";
-$SUB_VERSION = "502";
-$release_time = 1424971905;	## no critic (UselessNoCritic MagicNumbers)
+$SUB_VERSION = "557";
+$release_time = 1540116524;	## no critic (UselessNoCritic MagicNumbers)
 %history = (
   'Changes' => {
     '1.000' => '1.000'
   },
   'CountLiberties.xs' => {
+    '1.000' => '1.000'
+  },
+  'LICENSE' => {
     '1.000' => '1.000'
   },
   'MANIFEST' => {
@@ -27,6 +30,9 @@ $release_time = 1424971905;	## no critic (UselessNoCritic MagicNumbers)
     '1.000' => '1.000'
   },
   'README' => {
+    '1.000' => '1.000'
+  },
+  'README.md' => {
     '1.000' => '1.000'
   },
   'bin/count_liberties' => {
@@ -45,6 +51,9 @@ $release_time = 1424971905;	## no critic (UselessNoCritic MagicNumbers)
     '1.000' => '1.000'
   },
   'include/vector.hpp' => {
+    '1.000' => '1.000'
+  },
+  'invocation.md' => {
     '1.000' => '1.000'
   },
   'lib/Go/CountLiberties.pm' => {
