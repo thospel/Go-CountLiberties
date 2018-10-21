@@ -10,6 +10,7 @@ count\_liberties - Calculate the maximum number of liberties one group on a go b
     count_liberties [--tcmalloc] [--jemalloc] [--llmalloc] [--libcmalloc] [--hugepages [mount_point]] <other_options>
     count_liberties [map_load_factor <float>] [backbone_load_factor <float>]  <other_options>
     count_liberties [--generalize] <other_options>
+    count_liberties [--html <file>] <other_options>
     count_liberties [--stats] [--dump] <other_options>
     count_liberties [--sizes] [--debug_max_size] [--debug_history] <other_options>
     count_liberties [--history_bits <n>] <other_options>
@@ -88,6 +89,10 @@ If no arguments are given it runs for all board heights from 1 to the maximum su
 - --generalize
 
     Once all possibilities for a column repeat the program knows it has found the general ruie for any board width and the pattern will repeat from the first occurance of a column. But even before that column it can happen that the rule turns out to be still valid even if the possibilities for an earlier column where not the same. If this option is true (the default) the rule is presented as starting on the earliest such column.
+
+- --html &lt;file>
+
+    Also write output to the given file as HTML.
 
 - --stats
 

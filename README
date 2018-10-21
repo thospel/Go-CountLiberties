@@ -1,4 +1,4 @@
-Go::CountLiberties version 1.000
+Go::CountLiberties version 1.001
 ================================
 
 Calculate the maximum numbers of liberties a single group can have on a go board of height n <= 24. It will output a table and rule which answers this question for any board width.

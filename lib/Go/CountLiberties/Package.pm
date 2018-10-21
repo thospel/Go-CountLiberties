@@ -7,15 +7,17 @@ package Go::CountLiberties::Package;
 use strict;
 use warnings;
 use vars qw($VERSION $SUB_VERSION $release_time %history);
-$VERSION = "1.000";
-$SUB_VERSION = "557";
-$release_time = 1540116524;	## no critic (UselessNoCritic MagicNumbers)
+$VERSION = "1.001";
+$SUB_VERSION = "006";
+$release_time = 1540158437;	## no critic (UselessNoCritic MagicNumbers)
 %history = (
   'Changes' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'CountLiberties.xs' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'LICENSE' => {
     '1.000' => '1.000'
@@ -30,13 +32,16 @@ $release_time = 1540116524;	## no critic (UselessNoCritic MagicNumbers)
     '1.000' => '1.000'
   },
   'README' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'README.md' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'bin/count_liberties' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'bin/revision_check' => {
     '1.000' => '1.000'
@@ -54,16 +59,19 @@ $release_time = 1540116524;	## no critic (UselessNoCritic MagicNumbers)
     '1.000' => '1.000'
   },
   'invocation.md' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'lib/Go/CountLiberties.pm' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'lib/Go/CountLiberties/Constants.pm' => {
     '1.000' => '1.000'
   },
   'lib/Go/CountLiberties/Package.pm' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'liberties.txt' => {
     '1.000' => '1.000'

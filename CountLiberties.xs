@@ -74,6 +74,9 @@
 #include <mutex>
 #include <condition_variable>
 
+#include <cerrno>
+#include <sched.h>
+
 // These are actually in revision.cpp
 extern char const revision_system[];
 extern char const parent_revision[];
@@ -272,6 +275,7 @@ class CountLiberties {
         LIBERTY		= 4,
         EMPTY		= 7,
         STATES		= 8,
+
         BITS_PER_VERTEX = 2,
         // Mask to select the 2 bits of a vertex
         STONE_MASK	= (1 << BITS_PER_VERTEX) -1,		// 0x03,
@@ -295,37 +299,36 @@ class CountLiberties {
         MAX_THREADS	= 1024,
     };
 
-    static constexpr float DEFAULT_LOAD_FACTOR	= 0.5;
     static constexpr float MAP_LOAD_FACTOR	= 0.5;
     static constexpr float BACKBONE_LOAD_FACTOR	= 0.4;
 
     enum Operation {
+        WAITING = 0,
         CALL_DOWN,
         CALL_UP,
         CALL_ASYM_FINAL,
         CALL_SYM_FINAL,
         SIGNATURE,
         FINISH,
-        WAITING,
     };
-
-    // Repeated 01 bit pattern in the upper COMPRESSED_SIZE bytes
-    static uint64_t const FILL_MULTIPLIER = UINT64_C(-1) / 3 << (sizeof(uint64_t) - COMPRESSED_SIZE) * 8;
-    static uint64_t const BLACK_MASK         = FILL_MULTIPLIER * BLACK;
-    static uint64_t const BLACK_UP_MASK      = FILL_MULTIPLIER * BLACK_UP;
-    static uint64_t const BLACK_DOWN_MASK    = FILL_MULTIPLIER * BLACK_DOWN;
-    static uint64_t const BLACK_UP_DOWN_MASK = FILL_MULTIPLIER * BLACK_UP_DOWN;
 
     static_assert(HISTORY_BYTES >= 0,
                   "We won't be able to fit an Entry in an uint64_t");
 
+    // Represent a column as an array of intersections that each have a State
     class Column {
       public:
         Column() {};
         Column(char const* from, int height);
+
         auto      & operator[](int i)       { return column_[i]; }
         auto const& operator[](int i) const { return column_[i]; }
+
+        // Construct a string as a sequence of the actual numeric state values
         std::string to_raw_string(size_t height) const;
+
+        // Construct a "smart" string indicating which stones are connected
+        // and which empties are liberties or not
         char to_string(char* result, size_t height) const;
         auto to_string(const size_t height) const {
             char buffer[EXPANDED_SIZE+1];
@@ -337,27 +340,148 @@ class CountLiberties {
         std::array<State, EXPANDED_SIZE> column_;
     };
 
+    // Represent a whole column state inside a single integer
+    // This is not enough information to recover the full state in itself
+    // It needs to be combined with information with which intersections
+    // have stones or are empty
+    //  MSB                                          LSB
+    // +-------------------+----------------+-----------+
+    // + Column (2 bits    | history        | number of |
+    // + per intersection) | (8 or 16 bits) | liberties |
+    // +-------------------+----------------+-----------+
+    //                      <------ Mask::shift64 ------
+    //  1111111111111111111 0000000000000000 000000000000: Mask::column_mask64
+
+    // number of liberties will often be an offset from some fixed value to be
+    // able to handle liberties >= 256
+
+    class Entry;
+    class EntrySet;
+
     class CompressedColumn {
       public:
+        class Mask {
+            friend class CompressedColumn;
+            friend class Entry;
+            friend class EntrySet;
+          private:
+            static uint const shift64 = 8*(sizeof(uint64_t) - COMPRESSED_SIZE);
+            static uint64_t const column_mask64	= UINT64_C(-1) << shift64;
+
+            // Repeated 01 bit pattern in the upper COMPRESSED_SIZE bytes
+            static uint64_t const FILL_MULTIPLIER = UINT64_C(-1) / 3 << shift64;
+
+          public:
+            ALWAYS_INLINE
+            Mask() {}
+            // Create a proper 2 bit mask for position "pos" to be used in
+            // set_liberty, set_empty and set_black
+            ALWAYS_INLINE
+            explicit operator bool() const { return mask_ != 0; }
+            //Mask operator~() const {
+            //    return Mask{~mask_};
+            //}
+            template <class any>
+            ALWAYS_INLINE
+            Mask operator<<=(any const& shift) {
+                mask_ <<= shift;
+                return *this;
+            }
+            template <class any>
+            ALWAYS_INLINE
+            Mask operator>>=(any const& shift) {
+                mask_ >>= shift;
+                return *this;
+            }
+            ALWAYS_INLINE
+            Mask& operator&=(Mask const& rhs) {
+                mask_ &= rhs.mask_;
+                return *this;
+            }
+            ALWAYS_INLINE
+            static Mask stone_mask(uint pos) {
+                // Take care! do not use if shift can be >= sizeof(uint64_t)
+                return _stone_mask(stone_shift(pos));
+            }
+            ALWAYS_INLINE
+            static uint stone_shift(uint pos) {
+                return pos * BITS_PER_VERTEX + shift64;
+            }
+            ALWAYS_INLINE
+            static Mask _stone_mask(uint pos, uint64_t mask= STONE_MASK) {
+                // Take care! do not use if pos can be >= sizeof(uint64_t)
+                return Mask{mask << pos};
+            }
+            // Create a proper mask for use in backbone() from a position bitmask
+            // e.g "1001" becomes "11000011xxxxxxx" (xxx are 0 for history and bits)
+            static Mask backbone_mask(uint index) {
+                uint64_t mask{0};
+                uint64_t add{static_cast<uint64_t>(STONE_MASK) << Mask::shift64};
+                while (index) {
+                    if (index & 1) mask += add;
+                    index >>= 1;
+                    add <<= BITS_PER_VERTEX;
+                }
+                return Mask{mask};
+            }
+            auto black_mask() const;
+            auto black_up_mask() const;
+            auto black_down_mask() const;
+            auto black_up_down_mask() const;
+
+          private:
+            ALWAYS_INLINE
+            Mask(uint64_t mask) : mask_{mask} {}
+            ALWAYS_INLINE
+            Mask& operator|=(uint64_t mask) {
+                mask_ |= mask;
+                return *this;
+            }
+            ALWAYS_INLINE
+            Mask& operator>>=(uint shift) {
+                mask_ >>= shift;
+                return *this;
+            }
+            ALWAYS_INLINE
+            auto value() const { return mask_; }
+
+            uint64_t mask_;
+        };
+        // At some point make this a separate type.
+        // Rethink the Mask/ColumnOnly/CompressedColumn hierarchy
+        typedef Mask ColumnOnly;
+
+        // Number of bytes in the Column part
         constexpr size_t length() const { return COMPRESSED_SIZE; }
+        // Fetch the Column bits
         uint64_t column() const {
-            return _column() >> shift64;
+            return _column() >> Mask::shift64;
         }
+        // Set only the Column bits, leave history and liberties as is
         void column(uint64_t column) {
-            value_ = (value_ & ~column_mask64) | column << shift64;
+            value_ = (value_ & ~Mask::column_mask64) | column << Mask::shift64;
         }
-        static auto __fast_hash(uint64_t column, uint shift = shift64) -> uint64_t {
+        static auto __fast_hash(uint64_t column, uint shift = Mask::shift64) -> uint64_t {
             return column * lcm_multiplier >> shift;
         }
-        static auto _fast_hash(uint64_t column, uint shift = shift64) -> uint64_t {
-            return __fast_hash(column >> shift64, shift);
+        static auto _fast_hash(uint64_t column, uint shift = Mask::shift64) -> uint64_t {
+            return __fast_hash(column >> Mask::shift64, shift);
         }
-        auto fast_hash(uint shift = shift64) const -> uint64_t {
+        // Calculate a low quality hash over the Column bits
+        // (excluding liberties and history)
+        // Result is of the same length as the Column bits if shift not given
+        // In general shift can be used to limit the range of the result while
+        // using the high bits (which are of better quality)
+        // This hash is used to place elements in the EntrySet
+        auto fast_hash(uint shift = Mask::shift64) const -> uint64_t {
             // return murmur_mix(column());
             // return column();	// Very bad collisions
             // Terrible hash, but seems to perform really well for our case
             return _fast_hash(_column(), shift);
         }
+        // Calculate a higher quality hash over Column bits
+        // (excluding liberties and history)
+        // This hash is used to calculate the signature of a column set
         auto murmur(uint64_t seed = murmur_seed) const {
             // Derived from the glibc variant of a 64-bit Murmur hash
             // This is NOT any of the "official" murmur hashes
@@ -371,56 +495,37 @@ class CountLiberties {
         auto hash()              const { return murmur(); }
 
 #ifdef __POPCNT__
-        static uint popcount32(uint v) {
-            return _mm_popcnt_u32(v);
-        }
-        static uint popcount64(uint64_t v) {
-            return _mm_popcnt_u64(v);
-        }
         static uint half_popcount64(uint64_t v) {
             return _mm_popcnt_u64(v) / 2;
         }
-#else /* __POPCNT__ */
-        static uint popcount32(uint v) {
-            v -= (v >> 1) & 0x55555555;
-            v  = (v & 0x33333333) + ((v >> 2) & 0x33333333);
-            v  = (v + (v >> 4)) & 0xF0F0F0F;
-            return v * 0x1010101 >> 24;
-        }
-        static uint popcount64(uint64_t v) {
-            v -= (v >> 1) & UINT64_C(0x5555555555555555);
-            v  = (v & UINT64_C(0x3333333333333333)) + ((v >> 2) & UINT64_C(0x3333333333333333));
-            v  = (v + (v >> 4)) & UINT64_C(0x0f0f0f0f0f0f0f0f);
-            return v * UINT64_C(0x0101010101010101) >> 56;
-        }
-        static uint half_popcount64(uint64_t v) {
-            v  = v & UINT64_C(0x5555555555555555);
-            v  = (v & UINT64_C(0x3333333333333333)) + ((v >> 2) & UINT64_C(0x3333333333333333));
-            v  = (v + (v >> 4)) & UINT64_C(0x0f0f0f0f0f0f0f0f);
-            return v * UINT64_C(0x0101010101010101) >> 56;
-        }
 #endif /* __POPCNT__ */
+        // Clears a full column and (optionally) sets liberties
         void clear(Liberties liberties = 0) {
             value_ = liberties;
         }
-        auto any_empty(uint64_t index_mask, uint64_t mask = 0, uint shift = shift64) const -> bool;
         // Are there ane EMPTY (NOT LIBERTY) vertices that are not EMPTY in mask
-        auto any_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> bool {
+        auto any_empty(Mask index_mask, CompressedColumn mask, uint shift = Mask::shift64) const -> bool {
             return any_empty(index_mask, mask._column(), shift);
         }
-        auto nr_empty(uint64_t index_mask, uint64_t mask = 0, uint shift = shift64) const -> uint;
         // The number of EMPTY (NOT LIBERTY) vertices that are not EMPTY in mask
-        auto nr_empty(uint64_t index_mask, CompressedColumn mask, uint shift = shift64) const -> uint {
-            return nr_empty(index_mask, mask._column(), shift);
+        auto nr_empty(Mask index_mask, 
+                      CompressedColumn mask) const -> uint {
+            return nr_empty(index_mask, mask._column());
         }
-        auto nr_empty(CompressedColumn backbone, CompressedColumn mask, uint shift = shift64) const -> uint {
-            return nr_empty(backbone._column(), mask, shift);
+        auto nr_empty(Mask index_mask) const -> uint {
+            return nr_empty(index_mask, 0);
         }
-        bool multichain(uint64_t mask) const;
+
+        // Return true if and only if Column contains more than 1 chain
+        // "mask" is a backbone_mask indicating which intersections are stones
+        bool multichain(Mask mask) const;
+        // Recover a full column from a compressed column and a mask "from"
+        // "from" must have a 1 in each position that has a stone
+        // Height indicates how many fields we have to fill in
         void expand(Column& column, int from, int height) const;
 
-        auto test_vertex(uint64_t mask) const {
-            return  _column() &  mask;
+        ColumnOnly test_vertex(Mask mask) const {
+            return  Mask{_column() & mask.value()};
         }
         auto _get_vertex(uint shift) const {
             // Take care! do not use if shift can be >= sizeof(uint64_t)
@@ -430,56 +535,56 @@ class CountLiberties {
             // Take care! do not use if final shift can be >= sizeof(uint64_t)
             _get_vertex(shift * BITS_PER_VERTEX);
         }
-        void set_liberty(uint64_t mask) {
+        // Force position (2 set bits in mask) to an empty that is a liberty
+        void set_liberty(Mask mask) {
             clear_stone_mask(mask);
         }
-        void set_empty(uint64_t mask) {
+        // Force position (2 set bits in mask) to an empty that is not a liberty
+        void set_empty(Mask mask) {
             set_stone_mask(mask);
         }
-        void set_black(uint64_t mask) {
+        // Force position (2 set bits in mask) to be an isolated stone
+        // (if some of the mask bits are zero then keep pre-existing direction)
+        void set_black(Mask mask) {
             clear_stone_mask(mask);
         }
-        void add_direction(uint64_t mask) {
-            _column(_column() |  mask);
+        // Add direction determined by 1 bits to stone set using set_black()
+        void add_direction(Mask mask) {
+            set_stone_mask(mask);
         }
-        static uint stone_shift(uint pos) {
-            return pos * BITS_PER_VERTEX + shift64;
-        }
-        static uint64_t _stone_mask(uint pos, uint64_t mask= STONE_MASK) {
-            // Take care! do not use if pos can be >= sizeof(uint64_t)
-            return mask << pos;
-        }
-        static uint64_t stone_mask(uint pos) {
-            // Take care! do not use if shift can be >= sizeof(uint64_t)
-            return _stone_mask(stone_shift(pos));
-        }
-
         std::string raw_column_string() const;
 
         // Remove the down pointer to the current group looking up
-        void _terminate_up(uint64_t down_mask, uint64_t value);
+        void _terminate_up(Mask down_mask, ColumnOnly value);
         // Remove the up pointer to the current group looking down
-        void _terminate_down(uint64_t up_mask, uint64_t value);
+        void _terminate_down(Mask up_mask, ColumnOnly value);
         // Go to the top of the current group and make it point up
-        void _join_up(uint64_t stone_mask, uint64_t value);
+        void _join_up(Mask stone_mask, ColumnOnly value);
         // Go to the bottom of the current group and make it point down
-        void _join_down(uint64_t stone_mask, uint64_t value);
+        void _join_down(Mask stone_mask, ColumnOnly value);
 
+        // Check if 2 compressed columns have equal Column bits
         friend bool equal(CompressedColumn const& lhs, CompressedColumn const& rhs);
+        // Check if 2 compressed columns are completely equal
+        // (including history and liberties)
         friend bool _equal(CompressedColumn const& lhs, CompressedColumn const& rhs);
+        // Check if a compressed columns comes before another
+        // (only looking at Column bits, ignoring history and liberties)
         friend bool less(CompressedColumn const& lhs, CompressedColumn const& rhs);
+        // Check if a compressed columns comes before another
+        // (looking at Column bits, then history and then liberties)
         friend bool _less(CompressedColumn const& lhs, CompressedColumn const& rhs);
       protected:
-        static uint const shift64 = 8*(sizeof(uint64_t) - COMPRESSED_SIZE);
         static uint const shift8  = 8*(sizeof(uint64_t) - 1);
-        static uint64_t const column_mask64	= UINT64_C(-1) << shift64;
         static uint64_t const murmur_seed       = UINT64_C(0xc70f6907);
         static uint64_t const lcm_multiplier    = UINT64_C(6364136223846793005);
         static uint64_t const murmur_multiplier = UINT64_C(0xc6a4a7935bd1e995);
 
+        // Get raw column value
         uint64_t _column() const {
             return value_;
         }
+        // Set raw column value
         void _column(uint64_t value) {
             value_ = value;
         }
@@ -487,12 +592,18 @@ class CountLiberties {
             v *= murmur_multiplier;
             return v ^ (v >> 47);
         }
-        void set_stone_mask(uint64_t mask) {
-            _column(_column() |  mask);
+        void set_stone_mask(Mask mask) {
+            _column(_column() |  mask.value());
         }
-        void clear_stone_mask(uint64_t mask) {
-            _column(_column() & ~mask);
+        void clear_stone_mask(Mask mask) {
+            _column(_column() & ~mask.value());
         }
+        // Add the bits from mask to index_mask (or operation)
+        // Then check if any *NON* correspondig columns bits are set
+        auto any_empty(Mask index_mask, uint64_t mask = 0, uint shift = Mask::shift64) const -> bool;
+        auto nr_empty(Mask index_mask,
+                      uint64_t mask,
+                      uint shift = Mask::shift64) const -> uint;
 
       private:
         // The actual column data is in the COMPRESSED_SIZE MSBs
@@ -502,19 +613,24 @@ class CountLiberties {
         uint64_t value_;
     };
 
-    class EntrySet;
+    // Entry is a CompressedColumn for use inside an EntrySet
     class Entry: public CompressedColumn {
         friend EntrySet;
       public:
+        // Get liberties but shifted into the high bits
         auto _liberties() const { return _column() << shift8; }
+        // Get liberties
         auto liberties() const { return _column() & liberty_mask; }
+        // Get liberties shifted by offset
         uint liberties(int offset) const {
             return static_cast<int>(liberties()) + offset;
         }
+        // Increase liberties by add
         void liberties_add(uint64_t add) {
             // Caller should make sure this doesn't overflow
             _column(_column() + add);
         };
+        // Decrease liberties by sub
         void liberties_subtract(uint64_t sub) {
             // Caller should make sure this doesn't underflow
             _column(_column() - sub);
@@ -536,43 +652,43 @@ class CountLiberties {
             return hash(seed);
         }
 
+        // Set all history bits to 0
         void history_clear() { _column(_column() & ~history_mask); }
+        // Set history bit "record" to 0
         void record0(int record) {
             if (record >= 0)
                 _column(_column() & ~(1 << (record + 8)));
         }
+        // Set history bit "record" to 1
         void record1(int record) {
             if (record >= 0)
                 _column(_column() |  (1 << (record + 8)));
         }
+        // Get history bit "bit"
         auto history(int bit) const { return _column() >> (bit+8) & 1; }
+        // Get the string of history bits (grouped by 8)
         std::string history_bitstring() const;
 
+        // Return a new entry created from the current one after applying a mask
         Entry backbone(uint64_t mask) const {
             Entry temp;
             temp._column(_column() & mask);
             return temp;
         }
-        static uint64_t backbone_mask(uint index) {
-            uint64_t mask{0};
-            uint64_t add{static_cast<uint64_t>(STONE_MASK) << shift64};
-            while (index) {
-                if (index & 1) mask += add;
-                index >>= 1;
-                add <<= BITS_PER_VERTEX;
-            }
-            return mask;
-        }
+        // An Entry that is not equal to any valid column
         static Entry invalid(uint64_t base = BLACK_UP) {
             Entry temp;
-            temp._column(base << shift64);
+            temp._column(base << Mask::shift64);
             return temp;
         }
-        static Entry full(uint64_t index_mask) {
-            index_mask &= (UINT64_C(-1) >> 1) >> clz(index_mask);
-            index_mask &= index_mask - 1;
+        // An Entry containing index_mask with the first and last 1 removed
+        // E.g 0001100...01100 becomes 0000100...01000
+        static Entry full(CompressedColumn::Mask index_mask) {
+            uint64_t mask = index_mask.value();
+            mask &= (UINT64_C(-1) >> 1) >> clz(mask);
+            mask &= mask - 1;
             Entry result;
-            result._column(index_mask);
+            result._column(mask);
             return result;
         }
       private:
@@ -592,8 +708,8 @@ class CountLiberties {
         typedef size_t size_type;
         class value_type {
           public:
+            // EntrySet starts filled with UNSET entries. Check
             bool unset()      const { return entry._column() == UNSET; }
-            bool terminator() const { return entry._column() == TERMINATOR; }
             Entry entry;
         };
 
@@ -606,6 +722,7 @@ class CountLiberties {
             bool operator!= (iterator const& rhs) const {
                 return ptr_ != rhs.ptr_;
             }
+            // Skip to the next set entry (could be the TERMINATOR)
             iterator& operator++() {	// prefix ++
                 do {
                     ++ptr_;
@@ -637,6 +754,7 @@ class CountLiberties {
             bool operator!= (const_iterator const& rhs) const {
                 return ptr_ != rhs.ptr_;
             }
+            // Skip to the next set entry (could be the TERMINATOR)
             const_iterator& operator++() {	// prefix ++
                 do {
                     ++ptr_;
@@ -669,10 +787,12 @@ class CountLiberties {
             mask_{0},
             size_{0}
             {
-                value_type terminator;
-                terminator.entry._column(TERMINATOR);
             }
-        ~EntrySet() {};
+        ~EntrySet() {
+            // No memory is freed because we don't allocate any
+        };
+        // Takes space for max+1 Entries rounded up to CACHE_LINE size from ptr
+        // (The +1 is for the TERMINATOR)
         void alloc_arena(value_type* &ptr, size_t max) {
             if (size_) fatal("Cannot alloc if not empty");
             //  std::cout << "arena " << ptr << ", size " << max << "+1 value_types\n";
@@ -700,12 +820,14 @@ class CountLiberties {
         }
         iterator	end()		{ return &arena_[used()]; }
         const_iterator	end() const	{ return &arena_[used()]; }
+        // Debug: Raw dump of all Entries in EntrySet
         void dump() const {
             std::cout << "dump " << (void*) this << " =";
             for (size_type i=0; i < used(); ++i)
                 std::cout << "\t" << arena_[i].entry._column();
             std::cout << "\n";
         }
+        // Make EntrySet empty again
         void clear() {
             // std::cout << "Clear " << (void*) this << "\n";
             // repeated UNSET8 leads to UNSET
@@ -714,6 +836,11 @@ class CountLiberties {
                 size_ = 0;
             }
         }
+        // Reserve space for elements*load_multiplier Entries
+        // (rounded up to the next power of 2 entries)
+        // Does NOT clear(), but does make sure of a proper TERMINATOR and that
+        // the old TERMINATOR is changed to UNSET (on resize)
+        // (The load_multiplier is needed to reduce hash collisions)
         void reserve(size_type elements, float load_multiplier) {
             // Most reserves are for size 0
             // Ignoring size 0, most reserves end up at 1 << (height()+1)/2
@@ -722,13 +849,13 @@ class CountLiberties {
             size_type target = elements * load_multiplier;
             if (target) {
                 --target;
-                // We must have at least 1 empty to prevent find() from looping
                 if (target < elements) target = elements;
+                // We must have at least 1 empty to prevent find() from looping
                 assert(target > 0);
                 shift_ = clz(target);
                 // Set all bits after the first one
                 target = (static_cast<size_type>(0) - 1) >> shift_;
-                shift_ += (sizeof(uint64_t) - sizeof(size_type)) * 8;
+                shift_ += (sizeof(uint64_t) - sizeof(target)) * 8;
             }
             // std::cout << "Really Reserve " << target+1 << "\n";
             if (target == mask_) return;
@@ -737,7 +864,9 @@ class CountLiberties {
             arena_[used()].entry._column(TERMINATOR);
         }
         // Normally insert returns pair of iterator and bool
-        // We return nullptr if the insert worked or the address on failure
+        // We return true in case the entry already existed
+        // (based on only the Column bits without history and liberties)
+        // In all cases we set the address for the relevant old/new entry
         bool insert(Entry entry, value_type*& where) {
             assert(entry._column() != UNSET);
             assert(entry._column() != TERMINATOR);
@@ -776,12 +905,15 @@ class CountLiberties {
                 ++add2;
             }
         }
-        bool insert(Entry entry, value_type*& where, uint64_t mask) {
+        // Same as normal insert, but we detect already existing entries
+        // by only looking at the bits determined by mask
+        // (always use the same mask or no mask)
+        bool insert(Entry entry, value_type*& where, CompressedColumn::Mask mask) {
             assert(entry._column() != UNSET);
             assert(entry._column() != TERMINATOR);
             // if (size_ >= used() * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used()));
             // if (used() <= 2) fatal("Insert while not enough reserved");
-            uint64_t column = entry._column() & mask;
+            uint64_t column = entry._column() & mask.value();
             size_type pos = Entry::_fast_hash(column, shift_);
             if (arena_[pos].unset()) {
                 arena_[pos].entry = entry;
@@ -795,7 +927,7 @@ class CountLiberties {
             size_type add  = 1;
             size_type add2 = 2;
             while (true) {
-                if ((arena_[pos].entry._column() & mask) == column) {
+                if ((arena_[pos].entry._column() & mask.value()) == column) {
                     // std::cout << "Clash " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try " << add2-1 << ") versus " << entry._column() << "\n";
                     // std::cout << "Clash at DIB " << add2-1 << "\n";
                     where = &arena_[pos];
@@ -816,6 +948,7 @@ class CountLiberties {
         }
         // Normally find returns an iterator to the position or end()
         // Instead we return a direct pointer to the position or nullptr
+        // (match based on only the Column bits without history and liberties)
         value_type* find(Entry entry) {
             // dump();
             size_type pos = entry.fast_hash(shift_);
@@ -844,9 +977,12 @@ class CountLiberties {
                 // if (add2 > 10) fatal("Too much looping");
             }
         }
-        value_type* find(Entry entry, uint64_t mask) {
+        // Same as normal find, but we find entries by only looking at the bits
+        // determined by mask
+        // (always use the same mask or no mask)
+        value_type* find(Entry entry, CompressedColumn::Mask mask) {
             // dump();
-            uint64_t column = entry._column() & mask;
+            uint64_t column = entry._column() & mask.value();
             size_type pos = Entry::_fast_hash(column, shift_);
             // std::cout << "Try pos " << pos << "\n";
             if (arena_[pos].unset()) {
@@ -857,7 +993,7 @@ class CountLiberties {
             size_type add  = 1;
             size_type add2 = 2;
             while (true) {
-                if ((arena_[pos].entry._column() & mask) == column) {
+                if ((arena_[pos].entry._column() & mask.value()) == column) {
                     // std::cout << "Found at DIB " << add2-1 << "\n";
                     return &arena_[pos];
                 }
@@ -875,18 +1011,21 @@ class CountLiberties {
       private:
         static constexpr uint8_t  UNSET8     = -1;
         static constexpr uint64_t UNSET      = -1;
+        // Entry set just beyond the Entry array
         static constexpr uint64_t TERMINATOR =  0;
 
-        value_type* arena_;
-        size_type mask_;
-        size_type size_;
-        int shift_;
+        value_type* arena_;	// Entry array
+        size_type mask_;        // size of Entry array - 1
+        size_type size_;        // Number of set entries in Entry array
+        int shift_;		// Helper constant for fast_hash() so that
+                                // the result falls exactly in [0, mask_+1[
     };
 
     typedef EntrySet::size_type size_type;
     typedef EntrySet::iterator iterator;
     typedef EntrySet::const_iterator const_iterator;
 
+    // Data managed by each single thread
     class ThreadData {
       public:
         ThreadData();
@@ -946,6 +1085,7 @@ class CountLiberties {
         int operation_;
     };
 
+    // Manage all threads
     class Threads {
       public:
         Threads(uint nr_threads, bool save_thread = true);
@@ -963,20 +1103,24 @@ class CountLiberties {
         auto  end  () const { return threads_data_.end(); }
 
 #ifdef CONDITION_VARIABLE
+        // Get ready to send work to all threads
         void work_prepare() {
             std::unique_lock<std::mutex> lock{left_mutex_};
             left_waiting_ = 0;
         }
+        // Thread with thread_data waits until work is sent to it
         void work_wait(ThreadData* thread_data) {
             std::unique_lock<std::mutex> lock{thread_data->work_mutex_};
             while (thread_data->operation_ == WAITING)
                 thread_data->work_condition_.wait(lock);
         }
+        // Wait for all threads to finish their work
         void work_done_wait() {
             std::unique_lock<std::mutex> lock{left_mutex_};
             while (!left_waiting_)
                 left_condition_.wait(lock);
         }
+        // Tell thread with thread_data to start its work
         void work_start(ThreadData& thread_data) {
             {
                 std::unique_lock<std::mutex> lock{thread_data.work_mutex_};
@@ -984,6 +1128,7 @@ class CountLiberties {
             }
             thread_data.work_condition_.notify_one();
         }
+        // Thread thread_data uses this to say it is done with its work
         void work_done(ThreadData* thread_data) {
             thread_data->operation_ = WAITING;
             if (DEBUG_THREAD)
@@ -1024,37 +1169,68 @@ class CountLiberties {
                 left_mutex_.unlock();
         }
 #endif /* CONDITION_VARIABLE */
+        // Go back to waiting
         void waiting() {
             operation_ = WAITING;
         }
 
+        // Main loop for each thread (except the main thread)
+        // wait for commands, execute them, wait again
+        // exit if the command is finish()
         void thread_loop(CountLiberties* count_liberties, ThreadData* thread_data);
+        // Used by threads to pick up one unique unit of work
+        // The job is in some datastructure indexed by the result of this call
+        // If the returned index is negatibe there is no more work and the
+        // thread should go back to sleep
         int get_work() {
 	    return --atop_;
 	    // return atop_--;
 	    // return atop_.fetch_sub(1, std::memory_order_relaxed);
 	}
+        // Start all needed threads and have them enter their thread_loop()
         void start(CountLiberties* count_liberties);
+        // Start one operation. This is only meant for the "save_thread"
         void do_work(CountLiberties* countliberties, ThreadData& threads_data);
+        // Next operation: calculate signatures
         void signature() {
             operation_ = SIGNATURE;
         }
+        // Next operation: Move a bump down
+        //  .X       .X
+        //  X    to  .X
+        //  X        X
         void call_down(uint pos) {
             pos_ = pos;
             operation_ = CALL_DOWN;
         }
+        // Next operation: Move a bump up
+        //  X        X
+        //  X    to  .X
+        //  .X       .X
         void call_up(uint pos) {
             pos_ = pos;
             operation_ = CALL_UP;
         }
+        // Next operation: Move the final bump which is not in the middle
+        // (even length columns
+        //  .X       .X
+        //  .X       .X
+        //  X    to  .X
+        //  .X       .X
         void call_asym_final(uint pos) {
             pos_ = pos;
             operation_ = CALL_ASYM_FINAL;
         }
+        // Next operation: Move the final bump which is in the middle
+        // (odd length columns
+        //  .X       .X
+        //  X    to  .X
+        //  .X       .X
         void call_sym_final(uint pos) {
             pos_ = pos;
             operation_ = CALL_SYM_FINAL;
         }
+        // Next operation: exit all threads
         void finish() {
             operation_ = FINISH;
         }
@@ -1067,6 +1243,11 @@ class CountLiberties {
             save_thread_ = tmp;
             return rc;
         }
+        // Tell all threads to start working on the currently set operation
+        // There are ttop new work units to be finished
+        // Only start as many threads as needed if there is not enough work
+        // If any thread had an exception rethrow it in the main thread
+        // (if multiple threads die only the last exception is rembered)
         uint execute(CountLiberties* count_liberties, uint ttop) {
             if (ttop == 0) fatal("No work to start (operation " + std::to_string(operation_) + ")");
             uint threads = ttop < nr_threads() ? ttop : nr_threads();
@@ -1108,23 +1289,34 @@ class CountLiberties {
         void catch_exception();
 
       private:
+        // Special exception a thread can throw to cause an immediate clean exit
         class finish_exception: public std::exception {
         };
 
+        // Internal helper: this thread will now execute one operation
+        // (Keep selecting one unit of work from the queue until no more work)
         void _do_work(CountLiberties* countliberties, ThreadData& threads_data);
 
+        // Counter of work still te be done
         std::atomic_int atop_;
+        // How many threads are left that still haven't returned to WAITING
         std::atomic_int threads_left_;
+        // Per thread data
         std::vector<ThreadData> threads_data_;
         // Notice that threads_ can have one element less than threads_data_
         std::vector<std::thread> threads_;
+        // Last not yet rethrown exception any thread had
         std::exception_ptr eptr_;
 #ifdef CONDITION_VARIABLE
+        // left_waiting_ == 1 indicates all threads are ready and waiting. The
+        // variable is protected by left_mutex_ and signalled by left_condition_
         int left_waiting_;
         std::condition_variable left_condition_;
 #endif /* CONDITION_VARIABLE */
         std::mutex left_mutex_;
+        // Mutex so eptr_ is set by only one thread
         std::mutex eptr_mutex_;
+        // The operation to be done next (WAITING if nothing to be done yet)
         int operation_;
         uint pos_;
         uint save_thread_;
@@ -1141,6 +1333,7 @@ class CountLiberties {
         uint64_t old_min;
     };
 
+    // A position on the board .(0, 0) is the top left
     class Coordinate {
       public:
         Coordinate(int x, int y) : x_{x}, y_{y} {}
@@ -1155,7 +1348,9 @@ class CountLiberties {
         int x_, y_;
     };
 
+    // Memory usage by the current process in bytes
     static size_t get_memory();
+    // Maximum board height we support
     static auto max_height() { return EXPANDED_SIZE; }
 
     CountLiberties(int height, uint nr_threads = 1, bool save_thread = true);
@@ -1174,7 +1369,9 @@ class CountLiberties {
     void sym_compress(CompressedColumn& compressed, int index, int rindex) const HOT;
 
     void expand(Column& column, CompressedColumn const& compressed, int from) const;
-    bool multichain(CompressedColumn const& compressed, uint64_t mask) const {
+    // Return true if and only if "compressed" contains more than 1 chain
+    // mask is a backbone_mask indicating which intersections are stones
+    bool multichain(CompressedColumn const& compressed, CompressedColumn::Mask mask) const {
         return compressed.multichain(mask);
     }
 
@@ -1323,7 +1520,7 @@ class CountLiberties {
     int const nr_classes_;
     std::vector<EntryVector> entries_;
     int* reverse_bits_ = nullptr;
-    uint64_t* index_masks_ = nullptr;
+    CompressedColumn::Mask* index_masks_ = nullptr;
     int* indices_ = nullptr;
     EntryVector entry00_;
 
@@ -1380,28 +1577,71 @@ class CountLiberties {
         uint size  = 0;
     };
     Size* sizes_ = nullptr;
-    // Height  1: max_size=    4
-    // Height  2: max_size=    7
-    // Height  3: max_size=    5
-    // Height  4: max_size=    7
-    // Height  5: max_size=    8
-    // Height  6: max_size=   11
-    // Height  7: max_size=   14
-    // Height  8: max_size=   27
-    // Height  9: max_size=   29
-    // Height 10: max_size=   72
-    // Height 11: max_size=   82
-    // Height 12: max_size=  234
-    // Height 13: max_size=  250
-    // Height 14: max_size=  762
-    // Height 15: max_size=  767
-    // Height 16: max_size= 2435
-    // Height 17: max_size= 2464
-    // Height 18: max_size= 7811
-    // Height 19: max_size= 8156
-    // Height 20: max_size=27109
+    // Height  1: max_size=     4
+    // Height  2: max_size=     7
+    // Height  3: max_size=     5
+    // Height  4: max_size=     7
+    // Height  5: max_size=     8
+    // Height  6: max_size=    11
+    // Height  7: max_size=    14
+    // Height  8: max_size=    27
+    // Height  9: max_size=    29
+    // Height 10: max_size=    72
+    // Height 11: max_size=    82
+    // Height 12: max_size=   234
+    // Height 13: max_size=   250
+    // Height 14: max_size=   762
+    // Height 15: max_size=   767
+    // Height 16: max_size=  2435
+    // Height 17: max_size=  2464
+    // Height 18: max_size=  7811
+    // Height 19: max_size=  8156
+    // Height 20: max_size= 27109
+    // Height 21: max_size= 27977
+    // Height 22: max_size= 93268
+    // Height 23: max_size= 94567
     std::vector<int> indices0_;
 };
+
+/* ========================================================================= */
+
+ALWAYS_INLINE
+CountLiberties::CompressedColumn::Mask operator&(CountLiberties::CompressedColumn::Mask lhs, const CountLiberties::CompressedColumn::Mask& rhs) {
+    return lhs &= rhs;
+}
+
+template <class any>
+ALWAYS_INLINE
+CountLiberties::CompressedColumn::Mask operator<<(CountLiberties::CompressedColumn::Mask lhs, any const& rhs) {
+    return lhs <<= rhs;
+}
+
+template <class any>
+ALWAYS_INLINE
+CountLiberties::CompressedColumn::Mask operator>>(CountLiberties::CompressedColumn::Mask lhs, any const& rhs) {
+    return lhs >>= rhs;
+}
+
+ALWAYS_INLINE
+auto CountLiberties::CompressedColumn::Mask::black_mask() const {
+    return Mask{mask_ & FILL_MULTIPLIER * BLACK };
+}
+ALWAYS_INLINE
+auto CountLiberties::CompressedColumn::Mask::black_up_mask() const {
+    return Mask{mask_ & FILL_MULTIPLIER * BLACK_UP };
+}
+ALWAYS_INLINE
+auto CountLiberties::CompressedColumn::Mask::black_down_mask() const {
+    return Mask{mask_ & FILL_MULTIPLIER * BLACK_DOWN };
+}
+ALWAYS_INLINE
+auto CountLiberties::CompressedColumn::Mask::black_up_down_mask() const {
+    // return Mask{mask_ & FILL_MULTIPLIER * BLACK_UP_DOWN };
+    // All bits will be 1, so just pass on value
+    // Not *exactly* the same. This doesn't mask the history/liberty bits
+    // but these should not matter in any valid use of the Mask type
+    return *this;
+}
 
 /* ========================================================================= */
 
@@ -1523,21 +1763,22 @@ CountLiberties::Column::Column(char const* from, int height) {
 }
 
 /* ========================================================================= */
+
 ALWAYS_INLINE
-auto CountLiberties::CompressedColumn::any_empty(uint64_t index_mask, uint64_t mask, uint shift) const -> bool {
+auto CountLiberties::CompressedColumn::any_empty(Mask index_mask, uint64_t mask, uint shift) const -> bool {
     index_mask |= mask;
-    auto value = (_column() & ~index_mask) >> shift;
+    auto value = (_column() & ~index_mask.value()) >> shift;
     return value != 0;
 }
 
 ALWAYS_INLINE
-auto CountLiberties::CompressedColumn::nr_empty(uint64_t index_mask, uint64_t mask, uint shift) const -> uint {
+auto CountLiberties::CompressedColumn::nr_empty(Mask index_mask, uint64_t mask, uint shift) const -> uint {
     index_mask |= mask;
 #ifdef __POPCNT__
-    auto value = (_column() & ~index_mask) >> shift;
+    auto value = (_column() & ~index_mask.value()) >> shift;
     return half_popcount64(value);
 #else  /* __POPCNT__ */
-    auto value = _column() & ~index_mask;
+    auto value = _column() & ~index_mask.value();
     value &= UINT64_C(0x5555555555555555) << shift;
     // Special implementation of popcount32 for our use case
     uint32_t v = value + (value >> 32);
@@ -1548,7 +1789,7 @@ auto CountLiberties::CompressedColumn::nr_empty(uint64_t index_mask, uint64_t ma
 }
 
 // Remove the down pointer to the current group looking up
-void CountLiberties::CompressedColumn::_terminate_up(uint64_t down_mask, uint64_t value) {
+void CountLiberties::CompressedColumn::_terminate_up(Mask down_mask, ColumnOnly value) {
     int depth = 0;
     auto value2 = value << 1;
     while (true) {
@@ -1556,7 +1797,7 @@ void CountLiberties::CompressedColumn::_terminate_up(uint64_t down_mask, uint64_
         if (value & down_mask) {
             // BLACK_DOWN or BLACK_UP_DOWN
             if (depth <= 0) {
-                value_ &= ~down_mask;
+                value_ &= ~down_mask.value();
                 return;
             }
             if (!(value2 & down_mask))
@@ -1569,7 +1810,7 @@ void CountLiberties::CompressedColumn::_terminate_up(uint64_t down_mask, uint64_
 }
 
 // Remove the up pointer to the current group looking down
-void CountLiberties::CompressedColumn::_terminate_down(uint64_t up_mask, uint64_t value) {
+void CountLiberties::CompressedColumn::_terminate_down(Mask up_mask, ColumnOnly value) {
     int depth = 0;
     auto value2 = value >> 1;
     while (true) {
@@ -1577,7 +1818,7 @@ void CountLiberties::CompressedColumn::_terminate_down(uint64_t up_mask, uint64_
         if (value & up_mask) {
             // BLACK_UP or BLACK_UP_DOWN
             if (depth <= 0) {
-                value_ &= ~up_mask;
+                value_ &= ~up_mask.value();
                 return;
             }
             if (!(value2 & up_mask))
@@ -1590,54 +1831,56 @@ void CountLiberties::CompressedColumn::_terminate_down(uint64_t up_mask, uint64_
 }
 
 // Go to the top of the current group and make it point up
-void CountLiberties::CompressedColumn::_join_up(uint64_t stone_mask, uint64_t value) {
+void CountLiberties::CompressedColumn::_join_up(Mask stone_mask, ColumnOnly value) {
     int depth = 0;
     while (true) {
         stone_mask >>= BITS_PER_VERTEX;
         auto vertex = value & stone_mask;
-        if (vertex & BLACK_DOWN_MASK) {
-            if (!(vertex & BLACK_UP_MASK)) {
+        if (vertex.black_down_mask()) {
+            if (!(vertex.black_up_mask())) {
                 // BLACK_DOWN
                 if (depth-- == 0) {
                     // set to BLACK_UP_DOWN
-                    value_ |= stone_mask;
+                    value_ |= stone_mask.value();
                     return;
                 }
             }
-        } else if (vertex & BLACK_UP_MASK)
+        } else if (vertex.black_up_mask())
             // BLACK_UP
             ++depth;
     }
 }
 
 // Go to the bottom of the current group and make it point down
-void CountLiberties::CompressedColumn::_join_down(uint64_t stone_mask, uint64_t value) {
+void CountLiberties::CompressedColumn::_join_down(Mask stone_mask, ColumnOnly value) {
     int depth = 0;
     while (true) {
         stone_mask <<= BITS_PER_VERTEX;
         auto vertex = value & stone_mask;
-        if (vertex & BLACK_UP_MASK) {
+        if (vertex.black_up_mask()) {
             // BLACK_UP or BLACK_UP_DOWN
-            if (!(vertex & BLACK_DOWN_MASK)) {
+            if (!(vertex.black_down_mask())) {
                 // BLACK_UP
                 if (depth-- == 0) {
                     // set to BLACK_UP_DOWN
-                    value_ |= stone_mask;
+                    value_ |= stone_mask.value();
                     return;
                 }
             }
-        } else if (vertex  & BLACK_DOWN_MASK)
+        } else if (vertex.black_down_mask())
             // BLACK_DOWN
             ++depth;
     }
 }
 
-inline bool CountLiberties::CompressedColumn::multichain(uint64_t mask) const {
+// Return true if and only if Column contains more than 1 chain
+// mask is a backbone_mask indicating which intersections are stones
+inline bool CountLiberties::CompressedColumn::multichain(Mask mask) const {
     // ~ column changes BLACK and BLACK_UP to 11 and 10 respectively
     // & 0xAAAAAAAAAAAAAAAA changes them both to 10 (and other blacks are 00)
-    // & column_mask64 gets rid of history and liberties
+    // & Mask::column_mask64 gets rid of history and liberties
     // & mask gets rid of EMPTY/LIBERTY
-    uint64_t bits = (~_column() & (UINT64_C(0xAAAAAAAAAAAAAAAA) & column_mask64) & mask);
+    uint64_t bits = (~_column() & (UINT64_C(0xAAAAAAAAAAAAAAAA) & Mask::column_mask64) & mask.value());
     // bits now contains as many 1 bits as there are chains
     // reverse power of 2 check (0 is considered a power of 2 which is wanted)
     return (bits & (bits - 1)) != 0;
@@ -1979,6 +2222,9 @@ void CountLiberties::expand(Column& column,
     compressed.expand(column, from, height());
 }
 
+// Recover a full column from a compressed column and a mask "from"
+// "from" must have a 1 in each position that has a stone
+// Height indicates how many fields we have to fill in
 ALWAYS_INLINE
 void CountLiberties::CompressedColumn::expand(Column& expanded,
                                               int from, int height) const {
@@ -2111,13 +2357,13 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, int 
     }
 
     auto& backbone_set	= thread_data.backbone_set;
-    uint64_t index_mask	= index_masks_[index];
+    auto index_mask	= index_masks_[index];
 
     entries.clear();
     entries.reserve(map->size());
     backbone_reserve(backbone_set, map->size());
-    auto   up_mask = Entry::stone_mask(pos);
-    auto down_mask = Entry::stone_mask(height() - 1 - pos);
+    auto   up_mask = CompressedColumn::Mask::stone_mask(pos);
+    auto down_mask = CompressedColumn::Mask::stone_mask(height() - 1 - pos);
     // std::cout << "map size=" << map->size() << "\n";
 
     // Maximum over all indices
@@ -2441,10 +2687,10 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
     // std::cout << "   From: " << from << "[[" << args.index0 << ", " << args.index1 << "], [" << args.rindex0 << ", " << args.rindex1 << "]] (final)\n";
 
-    uint pos2 = Entry::stone_shift(args.pos);
+    uint pos2 = CompressedColumn::Mask::stone_shift(args.pos);
 
     uint up_black, down_black, up_or_down_black;
-    uint64_t up_mask, down_mask;
+    CompressedColumn::Mask up_mask, down_mask;
     bool liberty_prune = false;
     // Short circuit the test. compiler dead code elimination will do it for us
     if (true || direction >= 0) {
@@ -2455,8 +2701,8 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         up_black = (2*args.index0 >> args.pos) & 1;
 
     	up_mask = up_black ?
-            Entry::_stone_mask(pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
-            args.pos ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) : 0;
+            CompressedColumn::Mask::_stone_mask(pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
+            args.pos ? CompressedColumn::Mask::_stone_mask(pos2 - BITS_PER_VERTEX) : CompressedColumn::Mask::_stone_mask(0, 0);
         // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
         // Test should be against (from & 0x2), but args.index0 has the same bit
         // Need height != 2 otherwise the reverses make both sides impossible
@@ -2478,9 +2724,9 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         // the stone mask will shift out. However with the barrel shifter of
         // modern CPUs it will actually not shift at all
         down_mask	= down_black ?
-            Entry::_stone_mask(pos2 + BITS_PER_VERTEX, BLACK_UP) :
+            CompressedColumn::Mask::_stone_mask(pos2 + BITS_PER_VERTEX, BLACK_UP) :
             args.pos < EXPANDED_SIZE-1 ?
-                       Entry::_stone_mask(pos2 + BITS_PER_VERTEX) : 0;
+                       CompressedColumn::Mask::_stone_mask(pos2 + BITS_PER_VERTEX) : CompressedColumn::Mask::_stone_mask(0,0);
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
         // No need to check for height != 2 since that never has direction < 0
         if (PRUNE_SIDES && direction < 0 && args.pos == height()-1) {
@@ -2496,15 +2742,15 @@ void CountLiberties::_process(bool inject, int direction, Args args,
     bool sym0 = direction <= 0 && args.index0 >= args.rindex0;
     bool sym1 = direction <= 0 && args.index1 >= args.rindex1;
 
-    auto const stone_mask	= Entry::_stone_mask(pos2);
-    auto const black_up		= stone_mask & BLACK_UP_MASK;
-    auto const black_down	= stone_mask & BLACK_DOWN_MASK;
+    auto const stone_mask	= CompressedColumn::Mask::_stone_mask(pos2);
+    auto const black_up		= stone_mask.black_up_mask();
+    auto const black_down	= stone_mask.black_down_mask();
     auto const black_up_down	= stone_mask; // stone_mask & BLACK_UP_DOWN_MASK
 
     // index_mask should be based on from, but except at the current position
     // args.index0 has the same bits and we will never look at the different bit
-    // uint64_t index_mask	= index_masks_[from];
-    uint64_t index_mask	= index_masks_[args.index0];
+    // auto index_mask	= index_masks_[from];
+    auto index_mask	= index_masks_[args.index0];
 
     if (DEBUG_FETCH) std::cout << "   Read entryset " << from << "\n";
 
@@ -3326,6 +3572,7 @@ int CountLiberties::run_round(int x, int pos) {
     return pos_left;
 }
 
+// Memory usage by the current process in bytes
 auto CountLiberties::get_memory() -> size_t {
     // This is linux specific,
     // but on non-linux it shouldn't hurt, just won't get any result
@@ -3355,7 +3602,7 @@ auto CountLiberties::get_memory() -> size_t {
     MallocExtension::instance()->GetNumericProperty("generic.heap_size", &mem);
 # endif /* TCMALLOC */
 #endif /* JEMALLOC */
-    // If neither linux nor compiled with tcmalloc we have no idea and return 0
+    // If neither linux nor compiled with jemalloc or tcmalloc we have no idea and return 0
     return mem;
 }
 
@@ -3418,7 +3665,7 @@ void CountLiberties::clear() {
     record_.clear();
 
     // Notice we do NOT clear the filter since we probably want to run again
-    // using the new filter bits. To clear the filter call
+    // using the new filter bits. To clear the filter call clear_filter()
 
     // We also do NOT clear the full_column_ vector since with the extra filter
     // the full column can have less liberties than the real full column without
@@ -3490,7 +3737,7 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
             ("Height " + std::to_string(height) + " is below 0");
 
     reverse_bits_ = new int[nr_classes()];
-    index_masks_  = new uint64_t[nr_classes()];
+    index_masks_  = new CompressedColumn::Mask[nr_classes()];
     for (int i = 0; i < nr_classes(); ++i) {
         int bits = i;
         int reverse = 0;
@@ -3499,7 +3746,7 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
             bits /= 2;
         }
         reverse_bits_[i] = reverse;
-        index_masks_[i]  = Entry::backbone_mask(i);
+        index_masks_[i]  = CompressedColumn::Mask::backbone_mask(i);
     }
     target_width(height_);
     full_entry_ = Entry::full(index_masks_[nr_classes()-1]);
@@ -4095,6 +4342,25 @@ get_memory(...)
   CODE:
     PERL_UNUSED_VAR(items);
     RETVAL = CountLiberties::get_memory();
+  OUTPUT:
+    RETVAL
+
+UV
+nr_threads_default(...)
+  CODE:
+    PERL_UNUSED_VAR(items);
+    RETVAL = std::thread::hardware_concurrency();
+  OUTPUT:
+    RETVAL
+
+UV nr_cpus(...)
+  PREINIT:
+    cpu_set_t cs;
+  CODE:
+    PERL_UNUSED_VAR(items);
+    if (sched_getaffinity(0, sizeof(cs), &cs))
+        croak("Could not determine number of CPUs: %s", strerror(errno));
+    RETVAL = CPU_COUNT(&cs);
   OUTPUT:
     RETVAL
 

@@ -4,7 +4,7 @@ use 5.008001;
 use strict;
 use warnings;
 
-our $VERSION = '1.000';	# $Revision: 5609 $
+our $VERSION = '1.001';	# $Revision: 5609 $
 
 require XSLoader;
 XSLoader::load('Go::CountLiberties', $VERSION);

@@ -70,7 +70,7 @@ The basic output of a program run like:
 
 Looks something like this:
 
-    git revision 5e5ad24200c0bee39c5922550587206d9b90f631, parent 3c531ec8ce9651ee6168f206b77582a8be408f39
+    git revision 50691f8874bc62d23ae3e677e38fc50d5073a724, parent 5e67688a84d445b6fbc5e9a99426b6d41228334d
     Height =  7, 7x7 will be in [29, 33], 4 threads
      width  1:   2 (   0.0 s,        19 columns, 08F54132D63BF9E9 sig,    61896 KiB)
      width  2:   7 (   0.0 s,        40 columns, 78A7D38C13098F50 sig,    61896 KiB)
@@ -86,9 +86,9 @@ Looks something like this:
 
 In the top line
 
-    git revision 5e5ad24200c0bee39c5922550587206d9b90f631, parent 3c531ec8ce9651ee6168f206b77582a8be408f39
+    git revision 50691f8874bc62d23ae3e677e38fc50d5073a724, parent 5e67688a84d445b6fbc5e9a99426b6d41228334d
 
-*parent* `3c531ec8ce9651ee6168f206b77582a8be408f39` is the git revision id of the last commit that was done before the code was compiled. The compilation may however not have been done on an unchanged checkout. The *revision* `5e5ad24200c0bee39c5922550587206d9b90f631` is a SHA1 hash over the state of the files known to git at the moment the compilation was done. It may look a like a git revision id, but it isn't. It is however deterministic, so it can be used to make sure that two outputs were generated using a program based on the exact same source files.
+*parent* `5e67688a84d445b6fbc5e9a99426b6d41228334d` is the git revision id of the last commit that was done before the code was compiled. The compilation may however not have been done on an unchanged checkout. The *revision* `50691f8874bc62d23ae3e677e38fc50d5073a724` is a SHA1 hash over the state of the files known to git at the moment the compilation was done. It may look a like a git revision id, but it isn't. It is however deterministic, so it can be used to make sure that two outputs were generated using a program based on the exact same source files.
 
 The next line
 
@@ -300,45 +300,45 @@ And finally it prints how long the whole run took:
 
 A table for all board sizes up to 24 x 24. Since it also has the general rule you can in fact work out the solution for any width board with a height of 24 or less
 
-| | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | | from | rule | repeat | |
+| | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | | repeat | from | rule | |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | :--- | ---: | ---: |
-| **1** | _`0`_ | 1 | **2** | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | | 3 | +0 | 4 | **1** |
-| **2** | 1 | _`2`_ | 4 | **4** | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | | 4 | +1 | 5 | **2** |
-| **3** | **2** | 4 | _`6`_ | 8 | 10 | 12 | 14 | 16 | 18 | 20 | 22 | 24 | 26 | 28 | 30 | 32 | 34 | 36 | 38 | 40 | 42 | 44 | 46 | 48 | | 1 | +2 | 4 | **3** |
-| **4** | 2 | 4 | 8 | **_`9`_** | **11** | **14** | 16 | 18 | 21 | 23 | 25 | 28 | 30 | 32 | 35 | 37 | 39 | 42 | 44 | 46 | 49 | 51 | 53 | 56 | | 4 | +2,+3,+2 | 5 | **4** |
-| **5** | 2 | 5 | 10 | **11** | **_`14`_** | **18** | 20 | 23 | 27 | 29 | 32 | 36 | 38 | 41 | 45 | 47 | 50 | 54 | 56 | 59 | 63 | 65 | 68 | 72 | | 4 | +3,+4,+2 | 6 | **5** |
-| **6** | 2 | 6 | 12 | **14** | 18 | _`22`_ | 26 | 30 | 34 | 38 | 42 | 46 | 50 | 54 | 58 | 62 | 66 | 70 | 74 | 78 | 82 | 86 | 90 | 94 | | 4 | +4 | 6 | **6** |
-| **7** | 2 | 7 | 14 | **16** | **20** | **26** | _`29`_ | 33 | 39 | 42 | 46 | 52 | 55 | 59 | 65 | 68 | 72 | 78 | 81 | 85 | 91 | 94 | 98 | 104 | | 4 | +4,+6,+3 | 7 | **7** |
-| **8** | 2 | 8 | 16 | **18** | **23** | **30** | 33 | _`38`_ | 45 | 48 | 53 | 60 | 63 | 68 | 75 | 78 | 83 | 90 | 93 | 98 | 105 | 108 | 113 | 120 | | 4 | +5,+7,+3 | 8 | **8** |
-| **9** | 2 | 9 | 18 | 21 | 27 | 34 | **39** | 45 | _`51`_ | 57 | 63 | 69 | 75 | 81 | 87 | 93 | 99 | 105 | 111 | 117 | 123 | 129 | 135 | 141 | | 7 | +6 | 9 | **9** |
-| **10** | 2 | 10 | 20 | **23** | **29** | **38** | 42 | 48 | 57 | _`61`_ | 67 | 76 | 80 | 86 | 95 | 99 | 105 | 114 | 118 | 124 | 133 | 137 | 143 | 152 | | 4 | +6,+9,+4 | 8 | **10** |
-| **11** | 2 | 11 | 22 | **25** | **32** | **42** | 46 | 53 | 63 | 67 | _`74`_ | 84 | 88 | 95 | 105 | 109 | 116 | 126 | 130 | 137 | 147 | 151 | 158 | 168 | | 4 | +7,+10,+4 | 8 | **11** |
-| **12** | 2 | 12 | 24 | 28 | 36 | 46 | 52 | 60 | 69 | **76** | 84 | _`92`_ | 100 | 108 | 116 | 124 | 132 | 140 | 148 | 156 | 164 | 172 | 180 | 188 | | 10 | +8 | 12 | **12** |
-| **13** | 2 | 13 | 26 | **30** | **38** | **50** | 55 | 63 | 75 | 80 | 88 | 100 | _`105`_ | 113 | 125 | 130 | 138 | 150 | 155 | 163 | 175 | 180 | 188 | 200 | | 4 | +8,+12,+5 | 9 | **13** |
-| **14** | 2 | 14 | 28 | **32** | **41** | **54** | 59 | 68 | 81 | 86 | 95 | 108 | 113 | _`122`_ | 135 | 140 | 149 | 162 | 167 | 176 | 189 | 194 | 203 | 216 | | 4 | +9,+13,+5 | 10 | **14** |
-| **15** | 2 | 15 | 30 | 35 | 45 | 58 | 65 | 75 | 87 | 95 | 105 | 116 | **125** | 135 | _`145`_ | 155 | 165 | 175 | 185 | 195 | 205 | 215 | 225 | 235 | | 13 | +10 | 16 | **15** |
-| **16** | 2 | 16 | 32 | **37** | **47** | **62** | 68 | 78 | 93 | 99 | 109 | 124 | 130 | 140 | 155 | _`161`_ | 171 | 186 | 192 | 202 | 217 | 223 | 233 | 248 | | 4 | +10,+15,+6 | 12 | **16** |
-| **17** | 2 | 17 | 34 | **39** | **50** | **66** | 72 | 83 | 99 | 105 | 116 | 132 | 138 | 149 | 165 | 171 | _`182`_ | 198 | 204 | 215 | 231 | 237 | 248 | 264 | | 4 | +11,+16,+6 | 12 | **17** |
-| **18** | 2 | 18 | 36 | 42 | 54 | 70 | 78 | 90 | 105 | 114 | 126 | 140 | 150 | 162 | 175 | **186** | 198 | _`210`_ | 222 | 234 | 246 | 258 | 270 | 282 | | 16 | +12 | 19 | **18** |
-| **19** | 2 | 19 | 38 | **44** | **56** | **74** | 81 | 93 | 111 | 118 | 130 | 148 | 155 | 167 | 185 | 192 | 204 | 222 | _`229`_ | 241 | 259 | 266 | 278 | 296 | | 4 | +12,+18,+7 | 18 | **19** |
-| **20** | 2 | 20 | 40 | **46** | **59** | **78** | 85 | 98 | 117 | 124 | 137 | 156 | 163 | 176 | 195 | 202 | 215 | 234 | 241 | _`254`_ | 273 | 280 | 293 | 312 | | 4 | +13,+19,+7 | 15 | **20** |
-| **21** | 2 | 21 | 42 | 49 | 63 | 82 | 91 | 105 | 123 | 133 | 147 | 164 | 175 | 189 | 205 | 217 | 231 | 246 | **259** | 273 | _`287`_ | 301 | 315 | 329 | | 19 | +14 | 23 | **21** |
-| **22** | 2 | 22 | 44 | **51** | **65** | **86** | 94 | 108 | 129 | 137 | 151 | 172 | 180 | 194 | 215 | 223 | 237 | 258 | 266 | 280 | 301 | _`309`_ | 323 | 344 | | 4 | +14,+21,+8 | 24 | **22** |
-| **23** | 2 | 23 | 46 | **53** | **68** | **90** | 98 | 113 | 135 | 143 | 158 | 180 | 188 | 203 | 225 | 233 | 248 | 270 | 278 | 293 | 315 | 323 | _`338`_ | 360 | | 4 | +15,+22,+8 | 17 | **23** |
-| **24** | 2 | 24 | 48 | 56 | 72 | 94 | 104 | 120 | 141 | 152 | 168 | 188 | 200 | 216 | 235 | 248 | 264 | 282 | 296 | 312 | 329 | **344** | 360 | _`376`_ | | 22 | +16 | 27 | **24** |
-| | **1** | **2** | **3** | **4** | **5** | **6** | **7** | **8** | **9** | **10** | **11** | **12** | **13** | **14** | **15** | **16** | **17** | **18** | **19** | **20** | **21** | **22** | **23** | **24** | | from | rule | repeat | |
+| **1** | _`0`_ | 1 | **2** | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | |  4 | 3 | +0 |**1** |
+| **2** | 1 | _`2`_ | 4 | **4** | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | |  5 | 4 | +1 |**2** |
+| **3** | **2** | 4 | _`6`_ | 8 | 10 | 12 | 14 | 16 | 18 | 20 | 22 | 24 | 26 | 28 | 30 | 32 | 34 | 36 | 38 | 40 | 42 | 44 | 46 | 48 | |  4 | 1 | +2 |**3** |
+| **4** | 2 | 4 | 8 | **_`9`_** | **11** | **14** | 16 | 18 | 21 | 23 | 25 | 28 | 30 | 32 | 35 | 37 | 39 | 42 | 44 | 46 | 49 | 51 | 53 | 56 | |  5 | 4 | +2,+3,+2 |**4** |
+| **5** | 2 | 5 | 10 | **11** | **_`14`_** | **18** | 20 | 23 | 27 | 29 | 32 | 36 | 38 | 41 | 45 | 47 | 50 | 54 | 56 | 59 | 63 | 65 | 68 | 72 | |  6 | 4 | +3,+4,+2 |**5** |
+| **6** | 2 | 6 | 12 | **14** | 18 | _`22`_ | 26 | 30 | 34 | 38 | 42 | 46 | 50 | 54 | 58 | 62 | 66 | 70 | 74 | 78 | 82 | 86 | 90 | 94 | |  6 | 4 | +4 |**6** |
+| **7** | 2 | 7 | 14 | **16** | **20** | **26** | _`29`_ | 33 | 39 | 42 | 46 | 52 | 55 | 59 | 65 | 68 | 72 | 78 | 81 | 85 | 91 | 94 | 98 | 104 | |  7 | 4 | +4,+6,+3 |**7** |
+| **8** | 2 | 8 | 16 | **18** | **23** | **30** | 33 | _`38`_ | 45 | 48 | 53 | 60 | 63 | 68 | 75 | 78 | 83 | 90 | 93 | 98 | 105 | 108 | 113 | 120 | |  8 | 4 | +5,+7,+3 |**8** |
+| **9** | 2 | 9 | 18 | 21 | 27 | 34 | **39** | 45 | _`51`_ | 57 | 63 | 69 | 75 | 81 | 87 | 93 | 99 | 105 | 111 | 117 | 123 | 129 | 135 | 141 | |  9 | 7 | +6 |**9** |
+| **10** | 2 | 10 | 20 | **23** | **29** | **38** | 42 | 48 | 57 | _`61`_ | 67 | 76 | 80 | 86 | 95 | 99 | 105 | 114 | 118 | 124 | 133 | 137 | 143 | 152 | |  8 | 4 | +6,+9,+4 |**10** |
+| **11** | 2 | 11 | 22 | **25** | **32** | **42** | 46 | 53 | 63 | 67 | _`74`_ | 84 | 88 | 95 | 105 | 109 | 116 | 126 | 130 | 137 | 147 | 151 | 158 | 168 | |  8 | 4 | +7,+10,+4 |**11** |
+| **12** | 2 | 12 | 24 | 28 | 36 | 46 | 52 | 60 | 69 | **76** | 84 | _`92`_ | 100 | 108 | 116 | 124 | 132 | 140 | 148 | 156 | 164 | 172 | 180 | 188 | |  12 | 10 | +8 |**12** |
+| **13** | 2 | 13 | 26 | **30** | **38** | **50** | 55 | 63 | 75 | 80 | 88 | 100 | _`105`_ | 113 | 125 | 130 | 138 | 150 | 155 | 163 | 175 | 180 | 188 | 200 | |  9 | 4 | +8,+12,+5 |**13** |
+| **14** | 2 | 14 | 28 | **32** | **41** | **54** | 59 | 68 | 81 | 86 | 95 | 108 | 113 | _`122`_ | 135 | 140 | 149 | 162 | 167 | 176 | 189 | 194 | 203 | 216 | |  10 | 4 | +9,+13,+5 |**14** |
+| **15** | 2 | 15 | 30 | 35 | 45 | 58 | 65 | 75 | 87 | 95 | 105 | 116 | **125** | 135 | _`145`_ | 155 | 165 | 175 | 185 | 195 | 205 | 215 | 225 | 235 | |  16 | 13 | +10 |**15** |
+| **16** | 2 | 16 | 32 | **37** | **47** | **62** | 68 | 78 | 93 | 99 | 109 | 124 | 130 | 140 | 155 | _`161`_ | 171 | 186 | 192 | 202 | 217 | 223 | 233 | 248 | |  12 | 4 | +10,+15,+6 |**16** |
+| **17** | 2 | 17 | 34 | **39** | **50** | **66** | 72 | 83 | 99 | 105 | 116 | 132 | 138 | 149 | 165 | 171 | _`182`_ | 198 | 204 | 215 | 231 | 237 | 248 | 264 | |  12 | 4 | +11,+16,+6 |**17** |
+| **18** | 2 | 18 | 36 | 42 | 54 | 70 | 78 | 90 | 105 | 114 | 126 | 140 | 150 | 162 | 175 | **186** | 198 | _`210`_ | 222 | 234 | 246 | 258 | 270 | 282 | |  19 | 16 | +12 |**18** |
+| **19** | 2 | 19 | 38 | **44** | **56** | **74** | 81 | 93 | 111 | 118 | 130 | 148 | 155 | 167 | 185 | 192 | 204 | 222 | _`229`_ | 241 | 259 | 266 | 278 | 296 | |  18 | 4 | +12,+18,+7 |**19** |
+| **20** | 2 | 20 | 40 | **46** | **59** | **78** | 85 | 98 | 117 | 124 | 137 | 156 | 163 | 176 | 195 | 202 | 215 | 234 | 241 | _`254`_ | 273 | 280 | 293 | 312 | |  15 | 4 | +13,+19,+7 |**20** |
+| **21** | 2 | 21 | 42 | 49 | 63 | 82 | 91 | 105 | 123 | 133 | 147 | 164 | 175 | 189 | 205 | 217 | 231 | 246 | **259** | 273 | _`287`_ | 301 | 315 | 329 | |  23 | 19 | +14 |**21** |
+| **22** | 2 | 22 | 44 | **51** | **65** | **86** | 94 | 108 | 129 | 137 | 151 | 172 | 180 | 194 | 215 | 223 | 237 | 258 | 266 | 280 | 301 | _`309`_ | 323 | 344 | |  24 | 4 | +14,+21,+8 |**22** |
+| **23** | 2 | 23 | 46 | **53** | **68** | **90** | 98 | 113 | 135 | 143 | 158 | 180 | 188 | 203 | 225 | 233 | 248 | 270 | 278 | 293 | 315 | 323 | _`338`_ | 360 | |  17 | 4 | +15,+22,+8 |**23** |
+| **24** | 2 | 24 | 48 | 56 | 72 | 94 | 104 | 120 | 141 | 152 | 168 | 188 | 200 | 216 | 235 | 248 | 264 | 282 | 296 | 312 | 329 | **344** | 360 | _`376`_ | |  27 | 22 | +16 |**24** |
+| | **1** | **2** | **3** | **4** | **5** | **6** | **7** | **8** | **9** | **10** | **11** | **12** | **13** | **14** | **15** | **16** | **17** | **18** | **19** | **20** | **21** | **22** | **23** | **24** | | **repeat** | **from** | **rule** | |
 
-The start of the repeated pattern is indicated in **bold**. Square boards are indicated in *`italic`*
+The start of the repeated pattern is indicated in **bold**. Square boards are indicated in *`italic`*. **repeat* is the first column whose column set will be repeated, **from** is the first column whose pattern of increases will be repeated, **rule** is the pattern of increases starting from **from**.
 
 The table must obviously be symmetric and it's a nice check of the program that it indeed is.
 
-The obvious question was of course what the answer is for the standard 19 x 19 board which from the table you can see is *229*.
+An obvious question is of course what the answer is for the standard 19 x 19 board which the table shows to be *229*. One of the many ways to realize 229 liberties is:
 
 ![Sample solution][19x19]
 
 Many people already had constructed such solutions by hand, strongly suspecting but not being really sure that they were optimal. For example https://senseis.xmp.net/?GroupWithMostLiberties
 
-A lot of regularity is visible in the table, for example where the repeated patterns start and their values. This will easily allow you to predict values starting from column 4 except for the lines that are a multiple of 3. For the lines that are a multiple of 3 we can use the symmetry of the table and find all values except where the columns are a multiple of 3 too. Basically we seem to have boards where the smallest size is 3 or less as special cases and a pattern depending on the width and height modulo 3. By also observing the solutions for these cases a pattern becomes visible.
+A lot of regularity is visible in the table, for example where the repeated patterns start and in their values. This will easily allow you to predict values starting from column 4 except for the lines that are a multiple of 3. For the lines that are a multiple of 3 we can use the symmetry of the table and find all values except where the columns are a multiple of 3 too. Basically we seem to have boards where the smallest size is 3 or less as special cases and a pattern depending on the width and height modulo 3. By also observing the solutions for these cases a pattern becomes visible.
 
 Consider m x n boards with `m ≤ n`. We then have as cases:
 
@@ -565,7 +565,7 @@ Since running the program for all heights up to 24 agrees with these formulas th
 
 My hypothesis is that these cases are optimal for all board sizes (since the patterns given above cover all board sizes, at least seem pretty optimal and indeed **are** optimal up to size 24).
 
-A sample implementation in perl:
+A sample implementation in [perl][perl]:
 
 ```perl
 sub liberties {
