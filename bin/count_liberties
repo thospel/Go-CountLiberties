@@ -35,7 +35,7 @@ use constant {
     EMPTY	=> ".",
 };
 
-my $signatures	= 1;
+my $generalize	= 1;
 my $cost_type	= 0;
 
 my @args = @ARGV;
@@ -56,7 +56,7 @@ die "Could not parse your command line. Try $0 -h\n" unless
                "solution!"	=> \my $solution,
                "map_load_factor=f"	=> \my $map_load_factor,
                "backbone_load_factor=f"	=> \my $backbone_load_factor,
-               "generalize!"	=> \$signatures,
+               "generalize!"	=> \$generalize,
                "dump!"		=> \my $dump,
                "debug_history!"	=> \my $debug_history,
                "debug_max_size!"=> \my $show_max_size,
@@ -273,7 +273,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
     my $total_user_start = times;
 
     my $sweep = 0;
-    my $generalized = !$signatures;
+    my $generalized = !$generalize;
     my (@max, %signatures, @best_column);
 
     my @nr_keys_first =

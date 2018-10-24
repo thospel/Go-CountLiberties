@@ -288,8 +288,8 @@ class CountLiberties {
         HISTORY_BYTES	= sizeof(uint64_t) - COMPRESSED_SIZE - sizeof(Liberties),      		//  2
         HISTORY_BITS	= HISTORY_BYTES*8,			// 16
 
-        // The most liberty count can grow during one round (up, left, down)
-        MAX_GROWTH	= 3,
+        // The most liberty count can grow during one round (up, 2xleft, down)
+        MAX_GROWTH	= 4,
         // Exact value doesn't matter, just needed to put some reasonable limit
         MAX_THREADS	= 1024,
     };
@@ -338,7 +338,7 @@ class CountLiberties {
 
     class CompressedColumn {
       public:
-        constexpr size_t length() { return COMPRESSED_SIZE; }
+        static constexpr size_t length() { return COMPRESSED_SIZE; }
         uint64_t column() const {
             return _column() >> shift64;
         }
@@ -923,6 +923,7 @@ class CountLiberties {
             maps_[0].alloc_arena(ptr, max_map);
             maps_[1].alloc_arena(ptr, max_map);
             maps_[2].alloc_arena(ptr, max_map);
+            // maps_[3].alloc_arena(ptr, max_map);
             backbone_set.alloc_arena(ptr, max_backbone);
         }
       public:
@@ -931,13 +932,12 @@ class CountLiberties {
         uint new_min;
         int max_entries;
       private:
-        std::array<EntrySet, 3> maps_;
+        std::array<EntrySet, 4> maps_;
       public:
         EntrySet backbone_set;
         Entry max_entry;
         int  max_index;
         uint64_t result;
-        int filter, record;
 #ifdef CONDITION_VARIABLE
         std::condition_variable work_condition_;
 #endif /* CONDITION_VARIABLE */
@@ -1136,7 +1136,8 @@ class CountLiberties {
         int pos;
         uint index0, rindex0;
         uint index1, rindex1;
-        int filter, record;
+        int up_filter, down_filter;
+        int up_record, down_record;
         uint64_t old_min;
     };
 
@@ -1287,6 +1288,9 @@ class CountLiberties {
 
     void _process(bool inject, int direction, Args const args,
                   uint from, bool left_black, ThreadData& thread_data) HOT;
+    void _process_normal(Args args, uint from, bool side,
+                         bool up_left_black, bool down_left_black,
+                         ThreadData& thread_data);
     void reserve_thread_maps(size_t max);
     void map_reserve(EntrySet* set, auto size) {
         set->reserve(size, map_load_multiplier_);
@@ -1344,6 +1348,8 @@ class CountLiberties {
     // Used to renormalize the liberty counts so we don't overflow Liberty
     uint64_t old_min_;
     uint new_min_;
+    int up_filter_, down_filter_;
+    int up_record_, down_record_;
     uint filter_need_;
     int target_width_;
     int max_entries_ = 0;
@@ -2460,7 +2466,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         if (PRUNE_SIDES && direction > 0 && args.pos == 0 && height() != 2) {
             // std::cout << "Hit up" << std::endl;
              liberty_prune = true;
-            if (left_black) args.filter = -1;
+            if (left_black) args.up_filter = -1;
         }
     }
 
@@ -2483,7 +2489,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         if (PRUNE_SIDES && direction < 0 && args.pos == height()-1) {
             liberty_prune = true;
             // std::cout << "Hit down" << std::endl;
-            if (left_black) args.filter = -1;
+            if (left_black) args.up_filter = -1;
         }
     }
 
@@ -2521,7 +2527,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         // std::cout << "left=" << left << ", left_black = " << left_black << "\n";
 
         // Set empty
-        if (args.filter <= 0) {
+        if (args.up_filter <= 0) {
             Entry result = entry;
             if (left_black) {
                 if (left == BLACK) {
@@ -2551,7 +2557,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
             if (sym0) sym_compress(result, args.index0, args.rindex0);
             // The history map is initialized with zeroes so record0 is a no op
-            // result.record0(args.record);
+            // result.record0(args.up_record);
             if (DEBUG_FLOW) {
                 std::cout << "         Empty: '" <<
                     column_string(result, sym0 ? args.rindex0 : args.index0) <<
@@ -2569,7 +2575,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
         // for libs + offset_ here so we would keep empty columns were no
         // stone was ever placed. These however get added back by inject()
         if (inject || from) {
-            if (args.filter < 0) continue;
+            if (args.up_filter < 0) continue;
 
             Entry& result = entry;
 
@@ -2684,7 +2690,7 @@ void CountLiberties::_process(bool inject, int direction, Args args,
 
             if (sym1) sym_compress(result, args.index1, args.rindex1);
 
-            result.record1(args.record);
+            result.record1(args.up_record);
 
             if (DEBUG_FLOW) {
                 std::cout << "         Black: '" <<
@@ -2700,6 +2706,552 @@ void CountLiberties::_process(bool inject, int direction, Args args,
     // if (!inject) entry_clear(from);
 }
 
+ALWAYS_INLINE
+void CountLiberties::_process_normal(Args args, uint from, bool side,
+                                     bool up_left_black, bool down_left_black,
+                                     ThreadData& thread_data) {
+#if NDEBUG
+    // Make sure these tests get shortcircuited
+    if (!__builtin_constant_p(side))
+        fatal("inlining did not make side a constant");
+    if (!__builtin_constant_p(up_left_black))
+        fatal("inlining did not make left_black a constant");
+    if (!__builtin_constant_p(down_left_black))
+        fatal("inlining did not make left_black a constant");
+#endif /* NDEBUG */
+    auto   up_pos = args.pos;
+    auto down_pos = height() - 1 - args.pos;
+    uint   up_pos2 = Entry::stone_shift(  up_pos);
+    uint down_pos2 = Entry::stone_shift(down_pos);
+
+    auto const   up_stone_mask	= Entry::_stone_mask(  up_pos2);
+    auto const   up_black_up	=   up_stone_mask & BLACK_UP_MASK;
+    auto const   up_black_down	=   up_stone_mask & BLACK_DOWN_MASK;
+    auto const down_stone_mask	= Entry::_stone_mask(down_pos2);
+    auto const down_black_up	= down_stone_mask & BLACK_UP_MASK;
+    auto const down_black_down	= down_stone_mask & BLACK_DOWN_MASK;
+    uint   up_black = (2*args.index0 >>   up_pos) & 1;
+    uint down_black = (  args.index0 >> down_pos) & 2;
+    uint64_t   up_mask =   up_black ?
+        Entry::_stone_mask(  up_pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
+        Entry::_stone_mask(  up_pos2 - BITS_PER_VERTEX);
+    uint64_t down_mask	= down_black ?
+        Entry::_stone_mask(down_pos2 + BITS_PER_VERTEX, BLACK_UP) :
+        Entry::_stone_mask(down_pos2 + BITS_PER_VERTEX);
+    uint64_t const index_mask00	   = index_masks_[args.index0];
+    uint64_t const   up_index_mask = index_mask00 |   up_stone_mask;
+    uint64_t const down_index_mask = index_mask00 | down_stone_mask;
+    auto index01 = args.index0 | 1 <<   up_pos;
+    auto index10 = args.index0 | 1 << down_pos;
+    auto index11 = index01 | index10;
+
+    for (auto entry: entries_[from]) {
+        entry.liberties_subtract(args.old_min);
+
+        auto   up_left = entry._get_vertex(  up_pos2);
+        auto down_left = entry._get_vertex(down_pos2);
+        Entry down_result;
+        Entry   up_result = entry;
+
+        if (args.up_filter > 0) goto BLACK_STONE1;
+        if (up_left_black) {
+            if (up_left == BLACK) {
+                // We just lost a chain. In general we don't accept
+                // disconnection. Losing the last chain is ok however
+                // as long as we won't accept putting a new stone later
+                // (except if no stones at all have been added yet)
+                if (down_left_black || args.index0) goto BLACK_STONE1;
+            } else if (up_left == BLACK_UP) {
+                up_result._terminate_up(up_black_down, up_result.test_vertex(index_mask00));
+            } else if (up_left == BLACK_DOWN) {
+                up_result._terminate_down(up_black_up, up_result.test_vertex(down_left_black ? down_index_mask : index_mask00));
+            }
+            // BLACK_UP_DOWN stays connected so nothing to do
+
+            up_result.set_liberty(up_stone_mask);	// sets LIBERTY
+            up_result.liberties_add(1);
+        } else if (up_black) {
+            up_result.set_liberty(up_stone_mask);	// sets LIBERTY
+            up_result.liberties_add(1);
+        } else {
+            // up_left >= EMPTY, up >= EMPTY, down >= EMPTY
+            up_result.set_empty(up_stone_mask);	// sets EMPTY
+        }
+        // The history map is initialized with zeroes so record0 is a no op
+        // up_result.record0(args.up_record);
+
+        if (args.down_filter > 0) goto BLACK_STONE01;
+        down_result = up_result;
+        if (down_left_black) {
+            if (down_left == BLACK) {
+                // We just lost a chain. In general we don't accept
+                // disconnection. Losing the last chain is ok however
+                // as long as we won't accept putting a new stone later
+                // (except if no stones at all have been added yet)
+                if (args.index0) goto BLACK_STONE01;
+            } else if (down_left == BLACK_DOWN) {
+                down_result._terminate_down(down_black_up, down_result.test_vertex(index_mask00));
+            } else if (down_left == BLACK_UP) {
+                down_result._terminate_up(down_black_down, down_result.test_vertex(index_mask00));
+            }
+            // BLACK_DOWN_UP stays connected so nothing to do
+
+            down_result.set_liberty(down_stone_mask);	// sets LIBERTY
+            down_result.liberties_add(1);
+        } else if (down_black) {
+            down_result.set_liberty(down_stone_mask);	// sets LIBERTY
+            down_result.liberties_add(1);
+        } else {
+            // down_left >= EMPTY, down >= EMPTY, down >= EMPTY
+            down_result.set_empty(down_stone_mask);	// sets EMPTY
+        }
+        // The history map is initialized with zeroes so record0 is a no op
+        // down_result.record0(args.down_record);
+        if (DEBUG_FLOW) {
+            std::cout << "         Empty: '" <<
+                column_string(down_result, args.index0) <<
+                "' -> " << down_result.liberties(offset_) << " (" <<
+                down_result.history_bitstring() << ") set=" << (args.index0) << "\n";
+        }
+        insert(thread_data, &thread_data[0], down_result);
+
+      BLACK_STONE01:
+        if (!down_left_black && !args.index0) goto BLACK_STONE1;
+        if (args.down_filter < 0) goto BLACK_STONE1;
+        down_result = up_result;
+        if (!down_left_black) {
+            if (down_left != (LIBERTY & STONE_MASK)) {
+                // EMPTY
+                // Set to LIBERTY,except that we will immediately set BLACK
+                // down_result.set_liberty(down_stone_mask);
+                down_result.set_black(down_stone_mask);	// sets BLACK
+                down_result.liberties_add(1);
+            }
+            down_left = BLACK;
+        }
+
+        // std::cout << "down=" << down << ", down_black = " << down_black << "\n";
+        if (down_black) {
+            // Join
+            auto down = down_result.test_vertex(down_mask);
+            if (down) {
+                if (down_left & BLACK_DOWN) {
+                    // They were already connected, so we just created
+                    // a loop. No new connection bits need to be set.
+                    // We can prune the loop because it is never
+                    // optimal, though the program would soon discover
+                    // this for itself
+                    if (PRUNE_LOOPS) continue;
+                } else {
+                    // down_left = BLACK_UP_DOWN;
+                    down_result.add_direction(down_stone_mask);
+                    if (down_left & BLACK_UP)
+                        down_result._join_up(down_stone_mask, down_result.test_vertex(index_mask00));
+                }
+            } else {
+                // down |= BLACK_UP
+                down_result.add_direction(down_mask);
+                if (down_left & BLACK_DOWN) {
+                    down_result._join_down(down_stone_mask, down_result.test_vertex(index_mask00));
+                } else {
+                    // down_left |= BLACK_DOWN;
+                    down_result.add_direction(down_black_down);
+                }
+            }
+        } else {
+            auto down = down_result.test_vertex(down_mask);
+            if (down) {
+                // We made sure down is 0 if pos is too big
+                // down = LIBERTY
+                down_result.set_liberty(down_mask);
+                down_result.liberties_add(1);
+            }
+        }
+        down_result.record1(args.down_record);
+        if (DEBUG_FLOW) {
+            std::cout << "         Empty: '" <<
+                column_string(down_result, index01) <<
+                "' -> " << down_result.liberties(offset_) << " (" <<
+                down_result.history_bitstring() << ") set=" << (index01) << "\n";
+        }
+        insert(thread_data, &thread_data[1], down_result);
+
+      BLACK_STONE1:
+        if (!up_left_black && !down_left_black && !args.index0) continue;
+        if (args.up_filter < 0) continue;
+        up_result = entry;
+
+        if (!up_left_black) {
+            if (up_left != (LIBERTY & STONE_MASK)) {
+                // EMPTY
+                // Set to LIBERTY,except that we will immediately set BLACK
+                // up_result.set_liberty(stone_mask);
+                up_result.set_black(up_stone_mask);	// sets BLACK
+                up_result.liberties_add(1);
+            }
+            up_left = BLACK;
+        }
+
+        // std::cout << "up=" << up << ", up_black = " << up_black << "\n";
+        if (up_black) {
+            // Join
+            auto up = up_result.test_vertex(up_mask);
+            if (up) {
+                if (up_left & BLACK_UP) {
+                    // They were already connected, so we just created
+                    // a loop. No new connection bits need to be set.
+                    // We can prune the loop because it is never
+                    // optimal, though the program would soon discover
+                    // this for itself
+                    if (PRUNE_LOOPS) continue;
+                } else {
+                    // up_left = BLACK_UP_DOWN;
+                    up_result.add_direction(up_stone_mask);
+                    if (up_left & BLACK_DOWN)
+                        up_result._join_down(up_stone_mask, up_result.test_vertex(down_left_black ? down_index_mask : index_mask00));
+                }
+            } else {
+                // up |= BLACK_DOWN
+                up_result.add_direction(up_mask);
+                if (up_left & BLACK_UP) {
+                    up_result._join_up(up_stone_mask, up_result.test_vertex(index_mask00));
+                } else {
+                    // up_left |= BLACK_UP;
+                    up_result.add_direction(up_black_up);
+                }
+            }
+        } else {
+            auto up = up_result.test_vertex(up_mask);
+            if (up) {
+                // We made sure up is 0 if pos is too small
+                // up = LIBERTY
+                up_result.set_liberty(up_mask);
+                up_result.liberties_add(1);
+            }
+        }
+        up_result.record1(args.up_record);
+
+        if (args.down_filter > 0) goto BLACK_STONE11;
+        down_result = up_result;
+        if (down_left_black) {
+            if (down_left == BLACK) {
+                // We just lost a chain. In general we don't accept
+                // disconnection. Losing the last chain is ok however
+                // as long as we won't accept putting a new stone later
+                // (except if no stones at all have been added yet)
+                // However, we already put a stone on the up position so this
+                // is NOT the last chain
+                goto BLACK_STONE11;
+            } else if (down_left == BLACK_DOWN) {
+                down_result._terminate_down(down_black_up, down_result.test_vertex(index_mask00));
+            } else if (down_left == BLACK_UP) {
+                down_result._terminate_up(down_black_down, down_result.test_vertex(up_index_mask));
+            }
+            // BLACK_DOWN_UP stays connected so nothing to do
+
+            down_result.set_liberty(down_stone_mask);	// sets LIBERTY
+            down_result.liberties_add(1);
+        } else if (down_black) {
+            down_result.set_liberty(down_stone_mask);	// sets LIBERTY
+            down_result.liberties_add(1);
+        } else {
+            // down_left >= EMPTY, down >= EMPTY, down >= EMPTY
+            down_result.set_empty(down_stone_mask);	// sets EMPTY
+        }
+        // The history map is initialized with zeroes so record0 is a no op
+        // down_result.record0(args.down_record);
+        if (DEBUG_FLOW) {
+            std::cout << "         Empty: '" <<
+                column_string(down_result, index10) <<
+                "' -> " << down_result.liberties(offset_) << " (" <<
+                down_result.history_bitstring() << ") set=" << (index10) << "\n";
+        }
+        insert(thread_data, &thread_data[2], down_result);
+
+      BLACK_STONE11:
+        if (args.down_filter < 0) continue;
+        down_result = up_result;
+        if (!down_left_black) {
+            if (down_left != (LIBERTY & STONE_MASK)) {
+                // EMPTY
+                // Set to LIBERTY,except that we will immediately set BLACK
+                // down_result.set_liberty(down_stone_mask);
+                down_result.set_black(down_stone_mask);	// sets BLACK
+                down_result.liberties_add(1);
+            }
+            down_left = BLACK;
+        }
+
+        // std::cout << "down=" << down << ", down_black = " << down_black << "\n";
+        if (down_black) {
+            // Join
+            auto down = down_result.test_vertex(down_mask);
+            if (down) {
+                if (down_left & BLACK_DOWN) {
+                    // They were already connected, so we just created
+                    // a loop. No new connection bits need to be set.
+                    // We can prune the loop because it is never
+                    // optimal, though the program would soon discover
+                    // this for itself
+                    if (PRUNE_LOOPS) continue;
+                } else {
+                    // down_left = BLACK_UP_DOWN;
+                    down_result.add_direction(down_stone_mask);
+                    if (down_left & BLACK_UP)
+                        down_result._join_up(down_stone_mask, down_result.test_vertex(up_index_mask));
+                }
+            } else {
+                // down |= BLACK_UP
+                down_result.add_direction(down_mask);
+                if (down_left & BLACK_DOWN) {
+                    down_result._join_down(down_stone_mask, down_result.test_vertex(index_mask00));
+                } else {
+                    // down_left |= BLACK_DOWN;
+                    down_result.add_direction(down_black_down);
+                }
+            }
+        } else {
+            auto down = down_result.test_vertex(down_mask);
+            if (down) {
+                // We made sure down is 0 if pos is too big
+                // down = LIBERTY
+                down_result.set_liberty(down_mask);
+                down_result.liberties_add(1);
+            }
+        }
+        down_result.record1(args.down_record);
+        if (DEBUG_FLOW) {
+            std::cout << "         Empty: '" <<
+                column_string(down_result, index11) <<
+                "' -> " << down_result.liberties(offset_) << " (" <<
+                down_result.history_bitstring() << ") set=" << (index11) << "\n";
+        }
+        insert(thread_data, &thread_data[3], down_result);
+    }
+}
+
+ALWAYS_INLINE
+void CountLiberties::_process_sym(Args args,
+                                  uint from, bool side, bool left_black,
+                                  ThreadData& thread_data) {
+#if NDEBUG
+    // Make sure these tests get shortcircuited
+    if (!__builtin_constant_p(side))
+        fatal("inlining did not make side a constant");
+    if (!__builtin_constant_p(left_black))
+        fatal("inlining did not make left_black a constant");
+#endif /* NDEBUG */
+
+    // std::cout << "   From: " << from << "[[" << args.index0 << ", " << args.index1 << "], [" << args.rindex0 << ", " << args.rindex1 << "]] (final)\n";
+
+    uint pos2 = Entry::stone_shift(side ? args.pos : 0);
+
+    // Short circuit the test. compiler dead code elimination will do it for us
+    // Make sure that args.pos == 0 works and results in up_black == 0
+    // Should really be based on from, but args.index0 has the same bits
+    // at position args.pos-1
+    // up_black = (2*from >> args.pos) & 1;
+    uint   up_black = side ? (2*args.index0 >> args.pos) & 1 : 0;
+    uint down_black = side ? (  args.index0 >> args.pos) & 2 : 0;
+    uint up_or_down_black = up_black | down_black;
+
+    uint64_t up_mask =
+        up_black ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
+        !side    ? Entry::_stone_mask(pos2 - BITS_PER_VERTEX) :
+        0;
+    uint64_t down_mask	=
+        down_black ? Entry::_stone_mask(pos2 + BITS_PER_VERTEX, BLACK_UP) :
+        !side      ? Entry::_stone_mask(pos2 + BITS_PER_VERTEX) :
+        0;
+
+    auto const stone_mask	= Entry::_stone_mask(pos2);
+    auto const black_up		= stone_mask & BLACK_UP_MASK;
+    auto const black_down	= stone_mask & BLACK_DOWN_MASK;
+
+    // index_mask should be based on from, but except at the current position
+    // args.index0 has the same bits and we will never look at the different bit
+    // uint64_t index_mask	= index_masks_[from];
+    uint64_t index_mask	= index_masks_[args.index0];
+
+    if (DEBUG_FETCH) std::cout << "   Read entryset " << from << "\n";
+
+    for (auto entry: entries_[from]) {
+        if (DEBUG_FETCH) std::cout << "      Entry: " << entry.raw_column_string() << ", raw libs=" << static_cast<uint>(entry.liberties()) << "\n";
+        entry.liberties_subtract(args.old_min);
+        if (DEBUG_FLOW) {
+            std::cout << "      " << "In" << ": '" <<
+                column_string(entry, from) << "' -> " <<
+                entry.liberties(offset_) <<
+                " (" << entry.history_bitstring() << ")\n";
+        }
+
+        auto left = entry._get_vertex(pos2);
+        // std::cout << "left=" << left << ", left_black = " << left_black << "\n";
+
+        // Set empty
+        if (args.up_filter <= 0) {
+            Entry result = entry;
+            if (left_black) {
+                if (left == BLACK) {
+                    // We just lost a chain. In general we don't accept
+                    // disconnection. Losing the last chain is ok however
+                    // as long as we won't accept putting a new stone later
+                    // (except if no stones at all have been added yet)
+                    if (args.index0) goto BLACK_STONE;
+                } else if (left == BLACK_UP) {
+                    result._terminate_up(black_down, result.test_vertex(index_mask));
+                } else if (left == BLACK_DOWN) {
+                    result._terminate_down(black_up, result.test_vertex(index_mask));
+                }
+                // BLACK_UP_DOWN stays connected so nothing to do
+
+                result.set_liberty(stone_mask);	// sets LIBERTY
+                result.liberties_add(1);
+            } else if (up_or_down_black) {
+                result.set_liberty(stone_mask);	// sets LIBERTY
+                result.liberties_add(1);
+            } else {
+                // left >= EMPTY, up >= EMPTY, down >= EMPTY
+                result.set_empty(stone_mask);	// sets EMPTY
+            }
+
+            // The history map is initialized with zeroes so record0 is a no op
+            // result.record0(args.up_record);
+            if (DEBUG_FLOW) {
+                std::cout << "         Empty: '" <<
+                    column_string(result, args.index0) <<
+                    "' -> " << result.liberties(offset_) << " (" <<
+                    result.history_bitstring() << ") set=" << args.index0 << "\n";
+            }
+            insert(thread_data, &thread_data[0], result);
+        }
+
+      BLACK_STONE:
+        // Set black
+
+        // Avoid complete disconnect. Notice that we used to also test
+        // for libs + offset_ here so we would keep empty columns were no
+        // stone was ever placed. These however get added back by inject()
+        if (left_black || args.index0) {
+            if (args.up_filter < 0) continue;
+
+            Entry& result = entry;
+
+            int nogain = 3;
+            if (!left_black) {
+                if (left != (LIBERTY & STONE_MASK)) {
+                    // EMPTY
+                    // Set to LIBERTY,except that we will immediately set BLACK
+                    // result.set_liberty(stone_mask);
+                    result.set_black(stone_mask);	// sets BLACK
+                    result.liberties_add(1);
+                } else {
+                    // LIBERTY
+                    --nogain;
+                    // We don't need to set to BLACK since LIBERTY and BLACK
+                    // use the same bits
+                    // result.set_black(stone_mask);	// sets BLACK
+                }
+                left = BLACK;
+            }
+
+            // std::cout << "up=" << up << ", up_black = " << up_black << "\n";
+            if (up_black) {
+                // Join
+                auto up = entry.test_vertex(up_mask);
+                if (up) {
+                    if (left & BLACK_UP) {
+                        // They were already connected, so we just created
+                        // a loop. No new connection bits need to be set.
+                        // We can prune the loop because it is never
+                        // optimal, though the program would soon discover
+                        // this for itself
+                        if (PRUNE_LOOPS) continue;
+                    } else {
+                        result.add_direction(stone_mask);
+                        if (left & BLACK_DOWN)
+                            result._join_down(stone_mask, result.test_vertex(index_mask));
+                        left = BLACK_UP_DOWN;
+                    }
+                } else {
+                    // up |= BLACK_DOWN
+                    result.add_direction(up_mask);
+                    if (left & BLACK_UP) {
+                        result._join_up(stone_mask, result.test_vertex(index_mask));
+                    } else {
+                        left |= BLACK_UP;
+                        result.add_direction(black_up);
+                    }
+                }
+            } else {
+                auto up = entry.test_vertex(up_mask);
+                if (up) {
+                    // We made sure up is 0 if pos is too small
+                    // up = LIBERTY
+                    result.set_liberty(up_mask);
+                    result.liberties_add(1);
+                } else {
+                    // LIBERTY
+                    --nogain;
+                }
+            }
+
+            // std::cout << "down=" << down << ", down_black = " << down_black << "\n";
+            if (down_black) {
+                // Join
+                auto down = entry.test_vertex(down_mask);
+                if (down) {
+                    if (left & BLACK_DOWN) {
+                        // They were already connected, so we just created
+                        // a loop. No new connection bits need to be set.
+                        // We can prune the loop because it is never
+                        // optimal, though the program would soon discover
+                        // this for itself
+                        if (PRUNE_LOOPS) continue;
+                    } else {
+                        result.add_direction(stone_mask);
+                        if (left & BLACK_UP)
+                            result._join_up(stone_mask, result.test_vertex(index_mask));
+                        // left = BLACK_UP_DOWN;
+                    }
+                } else {
+                    // down |= BLACK_UP
+                    result.add_direction(down_mask);
+                    if (left & BLACK_DOWN) {
+                        result._join_down(stone_mask, result.test_vertex(index_mask));
+                    } else {
+                        // left |= BLACK_DOWN;
+                        result.add_direction(black_down);
+                    }
+                }
+            } else {
+                auto down = entry.test_vertex(down_mask);
+                if (down) {
+                    // We made sure down is 0 if pos is too big
+                    // down = LIBERTY
+                    result.set_liberty(down_mask);
+                    result.liberties_add(1);
+                } else {
+                    // LIBERTY
+                    --nogain;
+                }
+            }
+
+            if (!left_black && nogain == 0) continue;
+
+            result.record1(args.up_record);
+
+            if (DEBUG_FLOW) {
+                std::cout << "         Black: '" <<
+                    column_string(result, sym1 ? args.rindex1 : args.index1) <<
+                    "' -> " << result.liberties(offset_) << " (" <<
+                    result.history_bitstring() << ") set=" << (sym1 ? args.rindex1 : args.index1) << "\n";
+            }
+            insert(thread_data, args.map1, result);
+        }
+    }
+}
+
 void CountLiberties::call_down(int pos, ThreadData& thread_data) {
     uint bits  = 1 << pos;
 
@@ -2709,8 +3261,8 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
     Args args;
     args.map0    = map0;
     args.map1    = map1;
-    args.filter  = thread_data.filter;
-    args.record  = thread_data.record;
+    args.up_filter  = up_filter_;
+    args.up_record  = up_record_;
     args.old_min = old_min_;
     args.pos     = pos;
     args.index0  = -1;
@@ -2752,8 +3304,8 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     Args args;
     args.map0    = map0;
     args.map1    = map1;
-    args.filter  = thread_data.filter;
-    args.record  = thread_data.record;
+    args.up_filter  = up_filter_;
+    args.up_record  = up_record_;
     args.old_min = old_min_;
     args.pos     = pos;
     args.index0  = -1;
@@ -2812,8 +3364,8 @@ void CountLiberties::_call_asym(int direction, int pos, ThreadData& thread_data)
     auto map2 = &thread_data[2];
 
     Args args;
-    args.filter  = thread_data.filter;
-    args.record  = thread_data.record;
+    args.up_filter  = up_filter_;
+    args.up_record  = up_record_;
     args.old_min = old_min_;
     args.pos     = pos;
     args.index0  = -1;
@@ -3033,15 +3585,13 @@ void CountLiberties::reserve_thread_maps(size_t max) {
 }
 
 int CountLiberties::run_round(int x, int pos) {
-    int filter = x < target_width() ? filter_[x].at(pos) :  0;
-    int record = x < target_width() ? record_map_[x].at(pos) : -1;
+    up_filter_   = x < target_width() ? filter_[x].at(pos) :  0;
+    up_record_   = x < target_width() ? record_map_[x].at(pos) : -1;
 
     for (auto& thread_data: threads_) {
         thread_data.max_entry = Entry::invalid();
         thread_data.real_max = new_real_max_;
         thread_data.new_max  = new_max_;
-        thread_data.filter   = filter;
-        thread_data.record   = record;
         thread_data.new_min  = new_min_;
         thread_data.max_entries = 0;
     }
