@@ -778,6 +778,8 @@ class CountLiberties {
                 diff;
             return hash(seed);
         }
+        bool unset()      const { return _column() == UNSET; }
+        bool terminator() const { return _column() == TERMINATOR; }
 
         // Set all history bits to 0
         void history_clear() { _column(_column() & ~history_mask); }
@@ -819,6 +821,10 @@ class CountLiberties {
       private:
         static uint64_t const liberty_mask = UINT64_C(0xff);
         static uint64_t const history_mask = UINT64_C(-1) >> 8*(COMPRESSED_SIZE+1) << 8;
+        static uint8_t  const UNSET8       = -1;
+        static uint64_t const UNSET        = -1;
+        // Entry set just beyond the Entry array
+        static uint64_t const TERMINATOR   =  0;
     };
     typedef std::vector<Entry> EntryVector;
 
@@ -831,12 +837,7 @@ class CountLiberties {
     class EntrySet {
       public:
         typedef size_t size_type;
-        class value_type {
-          public:
-            // EntrySet starts filled with UNSET entries. Check
-            bool unset()      const { return entry._column() == UNSET; }
-            Entry entry;
-        };
+        typedef Entry value_type;
 
         class iterator {
           public:
@@ -961,7 +962,7 @@ class CountLiberties {
         void dump() const {
             std::cout << "dump " << (void*) this << " =";
             for (size_type i=0; i < used(); ++i)
-                std::cout << "\t" << arena_[i].entry._column();
+                std::cout << "\t" << arena_[i]._column();
             std::cout << "\n";
         }
         // Make EntrySet empty again
@@ -969,7 +970,7 @@ class CountLiberties {
             // std::cout << "Clear " << (void*) this << "\n";
             // repeated UNSET8 leads to UNSET
             if (size_) {
-                std::memset(&arena_[0], UNSET8, used() * sizeof(value_type));
+                std::memset(reinterpret_cast<char *>(&arena_[0]), Entry::UNSET8, used() * sizeof(value_type));
                 size_ = 0;
             }
         }
@@ -996,22 +997,22 @@ class CountLiberties {
             }
             // std::cout << "Really Reserve " << target+1 << "\n";
             if (target == mask_) return;
-            arena_[used()].entry._column(UNSET);
+            arena_[used()]._column(Entry::UNSET);
             mask_ = target;
-            arena_[used()].entry._column(TERMINATOR);
+            arena_[used()]._column(Entry::TERMINATOR);
         }
         // Normally insert returns pair of iterator and bool
         // We return true in case the entry already existed
         // (based on only the Column bits without history and liberties)
         // In all cases we set the address for the relevant old/new entry
         bool insert(Entry entry, value_type*& where) {
-            assert(entry._column() != UNSET);
-            assert(entry._column() != TERMINATOR);
+            assert(!entry.unset());
+            assert(!entry.terminator());
             // if (size_ >= used() * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used()));
             // if (used_ <= 2) fatal("Insert while not enough reserved");
             size_type pos = entry.fast_hash(shift_);
             if (arena_[pos].unset()) {
-                arena_[pos].entry = entry;
+                arena_[pos] = entry;
                 // std::cout << "Insert " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try 1)\n";
                 // std::cout << "Insert at DIB 1\n";
                 ++size_;
@@ -1023,7 +1024,7 @@ class CountLiberties {
             size_type add  = 1;
             size_type add2 = 2;
             while (true) {
-                if (arena_[pos].entry.column() == column) {
+                if (arena_[pos].column() == column) {
                     // std::cout << "Clash " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try " << add2-1 << ") versus " << entry._column() << "\n";
                     // std::cout << "Clash at DIB " << add2-1 << "\n";
                     where = &arena_[pos];
@@ -1031,7 +1032,7 @@ class CountLiberties {
                 }
                 pos = (pos + add) & mask_;
                 if (arena_[pos].unset()) {
-                    arena_[pos].entry = entry;
+                    arena_[pos] = entry;
                     // std::cout << "Insert " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try " << add2 << ")\n";
                     // std::cout << "Insert at DIB " << add2 << "\n";
                     ++size_;
@@ -1046,14 +1047,14 @@ class CountLiberties {
         // by only looking at the bits determined by mask
         // (always use the same mask or no mask)
         bool insert(Entry entry, value_type*& where, CompressedColumn::Mask mask) {
-            assert(entry._column() != UNSET);
-            assert(entry._column() != TERMINATOR);
+            assert(!entry.unset());
+            assert(!entry.terminator());
             // if (size_ >= used() * max_load_factor_) fatal("size " + std::to_string(size_) + ", used=" + std::to_string(used()));
             // if (used() <= 2) fatal("Insert while not enough reserved");
             uint64_t column = entry._column() & mask.value();
             size_type pos = Entry::_fast_hash(column, shift_);
             if (arena_[pos].unset()) {
-                arena_[pos].entry = entry;
+                arena_[pos] = entry;
                 // std::cout << "Insert " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try 1)\n";
                 // std::cout << "Insert at DIB 1\n";
                 ++size_;
@@ -1064,7 +1065,7 @@ class CountLiberties {
             size_type add  = 1;
             size_type add2 = 2;
             while (true) {
-                if ((arena_[pos].entry._column() & mask.value()) == column) {
+                if ((arena_[pos]._column() & mask.value()) == column) {
                     // std::cout << "Clash " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try " << add2-1 << ") versus " << entry._column() << "\n";
                     // std::cout << "Clash at DIB " << add2-1 << "\n";
                     where = &arena_[pos];
@@ -1072,7 +1073,7 @@ class CountLiberties {
                 }
                 pos = (pos + add) & mask_;
                 if (arena_[pos].unset()) {
-                    arena_[pos].entry = entry;
+                    arena_[pos] = entry;
                     // std::cout << "Insert " << arena_[pos] << " at " << (void *) this << "[" << pos << "] (try " << add2 << ")\n";
                     // std::cout << "Insert at DIB " << add2 << "\n";
                     ++size_;
@@ -1099,9 +1100,9 @@ class CountLiberties {
             size_type add  = 1;
             size_type add2 = 2;
             while (true) {
-                if (arena_[pos].entry.column() == column) {
+                if (arena_[pos].column() == column) {
                     // std::cout << "Found at DIB " << add2-1 << "\n";
-                    return &arena_[pos].entry;
+                    return &arena_[pos];
                 }
                 pos = (pos + add) & mask_;
                 // std::cout << "Retry pos " << pos << "\n";
@@ -1130,9 +1131,9 @@ class CountLiberties {
             size_type add  = 1;
             size_type add2 = 2;
             while (true) {
-                if ((arena_[pos].entry._column() & mask.value()) == column) {
+                if ((arena_[pos]._column() & mask.value()) == column) {
                     // std::cout << "Found at DIB " << add2-1 << "\n";
-                    return &arena_[pos].entry;
+                    return &arena_[pos];
                 }
                 pos = (pos + add) & mask_;
                 // std::cout << "Retry pos " << pos << "\n";
@@ -1146,11 +1147,6 @@ class CountLiberties {
             }
         }
       private:
-        static constexpr uint8_t  UNSET8     = -1;
-        static constexpr uint64_t UNSET      = -1;
-        // Entry set just beyond the Entry array
-        static constexpr uint64_t TERMINATOR =  0;
-
         value_type* arena_;	// Entry array
         size_type mask_;        // size of Entry array - 1
         size_type size_;        // Number of set entries in Entry array
@@ -1680,6 +1676,9 @@ class CountLiberties {
         entries.reserve(0);
         entries.shrink_to_fit();
     }
+    static auto all_topology_masks(Stones::value_type nr_classes) -> std::vector<CompressedColumn::Mask>;
+    static auto all_reverse_bits(Stones::value_type nr_classes, int height) -> std::vector<Stones>;
+
     void entry_transfer(ThreadData& thread_data, EntrySet* map, Stones stones, uint pos, Stones::value_type up, Stones::value_type down) HOT;
     void cost_propagate(int x, int y) { cost_propagate(x * height() + y); }
     void cost_propagate(int pos);
@@ -1698,9 +1697,6 @@ class CountLiberties {
     // It will have size nr_classes_+1 because we will keep the injection
     // parent in classes_[nr_classes_]
     std::vector<EntryVector> classes_;
-    // Helper array so we can look up a column reversal
-    Stones* reverse_bits_ = nullptr;
-    CompressedColumn::Mask* topology_masks_ = nullptr;
     // Array of indices that need to be processed by the worker threads
     Stones* indices_ = nullptr;
     EntryVector entry00_;
@@ -1709,30 +1705,34 @@ class CountLiberties {
     Threads threads_;
     std::vector<std::vector<int>> filter_;
     std::vector<std::vector<int>> record_map_;
+    std::vector<CompressedColumn::Mask> const topology_masks_;
+    // Helper array so we can look up a column reversal
+    std::vector<Stones> const reverse_bits_;
     std::vector<double> cost_;
     std::vector<Coordinate> record_;
     std::vector<uint64_t> full_liberties_;
-    uint64_t current_full_liberties_;
-    Entry full_entry_;
+    Entry const full_entry_;
     Entry max_entry_;
-    int offset_;		// Current Liberty renormalization
+    // Stone distribution of max_entry_
     Stones max_stones_;
+    // The maximum of max_classes of each thread. This is the highest actual
+    // index seen in any thread and so a convenient upper bound when
+    // looping over all indices
+    Stones max_classes_;
+    uint64_t current_full_liberties_;
+    uint64_t old_min_;
+    int offset_;		// Current Liberty renormalization
     uint old_real_max_;		// Use to detect risk of Liberty overflow
     uint new_real_max_;
     uint max_real_max_;
     uint old_max_;
     uint new_max_;
     // Used to renormalize the liberty counts so we don't overflow Liberty
-    uint64_t old_min_;
     uint new_min_;
     uint filter_need_;
     // Board width we are working towards.
     // Only important for sizing history/filter
     int target_width_;
-    // The maximum of max_classes of each thread. This is the highest actual
-    // index seen in any thread and so a convenient upper bound when
-    // looping over all indices
-    Stones max_classes_;
     float map_load_multiplier_;
     float topology_load_multiplier_;
     size_t max_map_;
@@ -1745,8 +1745,10 @@ class CountLiberties {
     // This is for development, and makes sure counting sort remains efficient
     size_t max_size_;
     // Reversed is a threads shared non atomic variable unprotected by any lock
-    // We only ever will use it if there is only one column in the current
+    // We only ever will *use* it if there is only one column in the current
     // EntrySets, in which case only one thread will have updated it
+    // (in the other cases it has been updated all the time in a possibly
+    //  unsafe manner but we will ignore the unsafe value)
     // Mutable since its just a logging variable that does not change the
     // logical object state and I don't want to declare rcompress() to not
     // be a const method
@@ -2482,12 +2484,12 @@ void CountLiberties::insert(ThreadData& thread_data, EntrySet* map, Entry const 
     // std::cout << "         Insert count " << (uint) entry.liberties() << "\n";
     // std::cout << "         Out: " << column_string(entry, index) << " -> " << (uint) entry.liberties() << "\n";
 
-    EntrySet::value_type* result;
+    Entry* result;
     if (map->insert(entry, result)) {
         // Already existed
         // std::cout << "           Already exists with count " << (uint) result->liberties() << "\n";
-        if (entry.liberties() > result->entry.liberties())
-          result->entry = entry;
+        if (entry.liberties() > result->liberties())
+          *result = entry;
     }
 }
 
@@ -2598,9 +2600,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
     // Maximum over all indices
     uint64_t full_liberties = current_full_liberties_;
     // std::cout << "Full: raw liberties=" << full_liberties << " (libs=" << full_liberties+offset_ << ")\n";
-    for (auto const& element: *map) {
-        auto entry = element.entry;
-        uint64_t liberties{entry.liberties()};
+    for (auto const entry: *map) {
+        uint64_t liberties = entry.liberties();
 
         if (liberties <= full_liberties) {
             auto libs = liberties + entry.nr_empty(topology_mask);
@@ -2665,20 +2666,20 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
         EntrySet::value_type* result;
 
         if (topology_set.insert(entry, result, topology_mask)) {
-            if (liberties > result->entry.liberties())
-                result->entry = entry;
-            else if (liberties == result->entry.liberties()) {
+            if (liberties > result->liberties())
+                *result = entry;
+            else if (liberties == result->liberties()) {
                 auto new_empty = entry.nr_empty(topology_mask);
-                auto old_empty = result->entry.nr_empty(topology_mask);
+                auto old_empty = result->nr_empty(topology_mask);
                 if (new_empty > old_empty)
-                    result->entry = entry;
+                    *result = entry;
                 else if (new_empty == old_empty) {
                     // This shouldn't really matter too much But we want:
                     // - more canonical result not depending on hash order
                     // - very slight reduction of the probability of a reverse
                     // - possible better bit sharing with smaller boards
-                    if (_less(entry, result->entry))
-                        result->entry = entry;
+                    if (_less(entry, *result))
+                        *result = entry;
                 }
             }
         }
@@ -2689,6 +2690,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
 
     // Fully connected column with these stones
     Entry full = Entry::full(topology_mask);
+    // find() still needs topology_mask as argument for consistent use
     auto found_full = topology_set.find(full, topology_mask);
     full_liberties = 0;
     if (found_full) {
@@ -2739,7 +2741,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
         }
     } else {
         for (auto const entry: entries) {
-            uint64_t liberties{entry.liberties()};
+            uint64_t liberties = entry.liberties();
             //if (0)
             //    std::cout <<
             //        "O Entry: "     << column_string(entry,    stones) <<
@@ -3539,7 +3541,7 @@ void CountLiberties::reserve_thread_maps(size_t max) {
 
     for (auto& thread: threads_)
         thread.alloc_arenas(ptr, max_map_, max_topology_);
-    std::memset(threads_arena_, -1, (ptr - threads_arena_) * sizeof(EntrySet::value_type));
+    std::memset(reinterpret_cast<char *>(threads_arena_), -1, (ptr - threads_arena_) * sizeof(EntrySet::value_type));
 
     threads_arena_map_      = max_map_;
     threads_arena_topology_ = max_topology_;
@@ -4026,32 +4028,46 @@ void CountLiberties::clear_filter() {
     filter_need_ = height() * target_width();
 }
 
-CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
-    height_{height},
+auto CountLiberties::all_topology_masks(Stones::value_type nr_classes) -> std::vector<CompressedColumn::Mask> {
+    std::vector<CompressedColumn::Mask> topology_masks;
+    topology_masks.reserve(nr_classes);
+    for (Stones::value_type i = 0; i < nr_classes; ++i)
+        topology_masks.emplace_back(CompressedColumn::Mask::topology_mask(i));
+    //topology_masks.shrink_to_fit();
+    return topology_masks;
+}
+
+auto CountLiberties::all_reverse_bits(Stones::value_type nr_classes, int height) -> std::vector<Stones> {
+    std::vector<Stones> reverse_bits;
+    reverse_bits.reserve(nr_classes);
+    for (Stones::value_type i = 0; i < nr_classes; ++i)
+        reverse_bits.emplace_back(Stones{i}.reverse(height));
+    //reverse_bits.shrink_to_fit();
+    return reverse_bits;
+}
+
+CountLiberties::CountLiberties(int _height, uint nr_threads, bool save_thread) :
+    height_{_height},
     nr_classes_{Stones::ONE << height_},
     threads_{nr_threads, save_thread},
+    topology_masks_{all_topology_masks(nr_classes())},
+    reverse_bits_{all_reverse_bits(nr_classes_, height())},
+    full_entry_{Entry::full(topology_masks_[nr_classes()-1])},
     max_classes_{no_stones()},
     map_load_multiplier_{1. / MAP_LOAD_FACTOR},
     topology_load_multiplier_{1. / TOPOLOGY_LOAD_FACTOR}
 {
 
-    // std::cout << "height=" << height_ << "\n";
-    if (height > EXPANDED_SIZE)
+    // std::cout << "height=" << height() << "\n";
+    if (height() > EXPANDED_SIZE)
         throw std::out_of_range
-            ("Height " + std::to_string(height) +
+            ("Height " + std::to_string(height()) +
              " is bigger than " + std::to_string(EXPANDED_SIZE));
-    if (height < 0)
+    if (height() < 0)
         throw std::out_of_range
-            ("Height " + std::to_string(height) + " is below 0");
+            ("Height " + std::to_string(height()) + " is below 0");
 
-    reverse_bits_ = new Stones[nr_classes()];
-    topology_masks_  = new CompressedColumn::Mask[nr_classes()];
-    for (Stones::value_type i = 0; i < nr_classes(); ++i) {
-        reverse_bits_[i] = Stones{i}.reverse(height_);
-        topology_masks_[i]  = CompressedColumn::Mask::topology_mask(i);
-    }
-    target_width(height_);
-    full_entry_ = Entry::full(topology_masks_[nr_classes()-1]);
+    target_width(height());
 
     entry00_.reserve(1);
     // One extra to hold the empty column injector
@@ -4076,8 +4092,6 @@ CountLiberties::~CountLiberties() {
         delete[] threads_arena_;
     delete[] indices_;
     delete[] sizes_;
-    delete[] topology_masks_;
-    delete[] reverse_bits_;
 }
 
 class je_malloc_stats {
