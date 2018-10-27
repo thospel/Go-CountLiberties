@@ -279,6 +279,8 @@ class CountLiberties {
         STATES		= 8,
 
         BITS_PER_VERTEX = 2,
+        VERTICES_PER_BYTE = 8 / BITS_PER_VERTEX,		//  4
+
         // Mask to select the 2 bits of a vertex
         STONE_MASK	= (1 << BITS_PER_VERTEX) -1,		// 0x03,
 
@@ -302,7 +304,7 @@ class CountLiberties {
     };
 
     static constexpr float MAP_LOAD_FACTOR	= 0.5;
-    static constexpr float BACKBONE_LOAD_FACTOR	= 0.4;
+    static constexpr float TOPOLOGY_LOAD_FACTOR	= 0.4;
 
     enum Operation {
         WAITING = 0,
@@ -314,20 +316,14 @@ class CountLiberties {
         FINISH,
     };
 
-#if UINT_MAX >> MAX_SIZE
-    typedef int Direction;
-#else  // UINT_MAX >> MAX_SIZE
-    typedef int64_t Direction;
-#endif // UINT_MAX >> MAX_SIZE
-
     // typedef uint Stones;
     class Stones {
         friend CountLiberties;
-#if UINT_MAX >> MAX_SIZE
+#if UINT_MAX >> EXPANDED_SIZE
         typedef uint value_type;
-#else  // UINT_MAX >> MAX_SIZE
+#else  // UINT_MAX >> EXPANDED_SIZE
         typedef uint64_t value_type;
-#endif // UINT_MAX >> MAX_SIZE
+#endif // UINT_MAX >> EXPANDED_SIZE
         static value_type const ONE = 1;
       public:
         ALWAYS_INLINE
@@ -408,7 +404,8 @@ class CountLiberties {
 
         // Return 1 if there is a stone above position pos, 0 otherwise
         // Take care that this works for pos == 0 (and gives 0)
-        // Would fail for the top stone if MAX_SIZE == 31 but MAX_SIZE%4==0
+        // Would fail for the top stone if EXPANDED_SIZE == 31
+        // but EXPANDED_SIZE%4==0
         ALWAYS_INLINE
         uint up_stone(uint pos) const { return (2*stones_ >> pos) & 1; }
         // Return 2 if there is a stone below position pos, 0 otherwise
@@ -453,7 +450,7 @@ class CountLiberties {
     ALWAYS_INLINE
     static Stones one_stone( int pos) { return Stones{Stones::ONE << pos}; }
 
-    // Represent a column as an array of intersections that each have a State
+    // Represent a column as an array of vertices that each have a State
     class Column {
       public:
         Column() {};
@@ -483,14 +480,14 @@ class CountLiberties {
 
     // Represent a whole column state inside a single integer
     // This is not enough information to recover the full state in itself
-    // It needs to be combined with information with which intersections
+    // It needs to be combined with information with which vertices
     // have stones or are empty
     //  MSB                                          LSB
     // +-------------------+----------------+-----------+
     // + Column (2 bits    | history        | number of |
-    // + per intersection) | (8 or 16 bits) | liberties |
+    // + per vertex        | (8 or 16 bits) | liberties |
     // +-------------------+----------------+-----------+
-    //                      <------ Mask::shift64 ------
+    //  zero [bottom    top]<------ Mask::shift64 ------
     //  1111111111111111111 0000000000000000 000000000000: Mask::column_mask64
 
     // number of liberties will often be an offset from some fixed value to be
@@ -553,9 +550,11 @@ class CountLiberties {
                 // Take care! do not use if pos can be >= sizeof(uint64_t)
                 return Mask{mask << pos};
             }
-            // Create a proper mask for use in backbone() from a position bitmask
-            // e.g "1001" becomes "11000011xxxxxxx" (xxx are 0 for history and bits)
-            static Mask backbone_mask(Stones::value_type index) {
+            // A mask targetting only the stone positions. This selects the part
+            // that represents column topology (how the stones are connected)
+            // e.g stones "01001" becomes "yyyy0011000011xxxxxxx"
+            // (yyy are 0 for out of board, xxx are 0 for history and bits)
+            static Mask topology_mask(Stones::value_type index) {
                 uint64_t mask{0};
                 uint64_t add{static_cast<uint64_t>(STONE_MASK) << Mask::shift64};
                 while (index) {
@@ -589,8 +588,8 @@ class CountLiberties {
             uint64_t mask_;
         };
         // At some point make this a separate type.
-        // Rethink the Mask/ColumnOnly/CompressedColumn hierarchy
-        typedef Mask ColumnOnly;
+        // Rethink the Mask/Topology/CompressedColumn hierarchy
+        typedef Mask Topology;
 
         // Number of bytes in the Column part
         constexpr size_t length() const { return COMPRESSED_SIZE; }
@@ -635,46 +634,38 @@ class CountLiberties {
         auto hash(uint64_t seed) const { return murmur(seed); }
         auto hash()              const { return murmur(); }
 
-#ifdef __POPCNT__
-        static uint half_popcount64(uint64_t v) {
-            return _mm_popcnt_u64(v) / 2;
-        }
-#endif /* __POPCNT__ */
         // Clears a full column and (optionally) sets liberties
         void clear(Liberties liberties = 0) {
             value_ = liberties;
         }
-        // Are there ane EMPTY (NOT LIBERTY) vertices that are not EMPTY in mask
-        auto any_empty(Mask index_mask, CompressedColumn mask, uint shift = Mask::shift64) const -> bool {
-            return any_empty(index_mask, mask._column(), shift);
-        }
+        // Are there any EMPTY (NOT LIBERTY) vertices that are not EMPTY in mask
+        auto any_empty(Mask topology_mask, CompressedColumn mask) const -> bool;
         // The number of EMPTY (NOT LIBERTY) vertices that are not EMPTY in mask
-        auto nr_empty(Mask index_mask,
+        ALWAYS_INLINE
+        auto nr_empty(Mask topology_mask,
                       CompressedColumn mask) const -> uint {
-            return nr_empty(index_mask, mask._column());
+            return nr_empty(topology_mask, mask._column());
         }
-        auto nr_empty(Mask index_mask) const -> uint {
-            return nr_empty(index_mask, 0);
+        ALWAYS_INLINE
+        auto nr_empty(Mask topology_mask) const -> uint {
+            return nr_empty(topology_mask, 0);
         }
 
         // Return true if and only if Column contains more than 1 chain
-        // "mask" is a backbone_mask indicating which intersections are stones
-        bool multichain(Mask mask) const;
+        // "mask" is a topology_mask indicating which vertices are stones
+        bool multichain(Mask topology_mask) const;
         // Recover a full column from a compressed column and a mask "from"
         // "from" must have a 1 in each position that has a stone
         // Height indicates how many fields we have to fill in
         void expand(Column& column, Stones from, int height) const;
 
-        ColumnOnly test_vertex(Mask mask) const {
+        Topology test_vertex(Mask mask) const {
             return  Mask{_column() & mask.value()};
         }
-        auto _get_vertex(uint shift) const {
+        ALWAYS_INLINE
+        auto get_vertex(uint shift) const {
             // Take care! do not use if shift can be >= sizeof(uint64_t)
             return  _column() >> shift & STONE_MASK;
-        }
-        auto get_vertex(uint shift) const {
-            // Take care! do not use if final shift can be >= sizeof(uint64_t)
-            _get_vertex(shift * BITS_PER_VERTEX);
         }
         // Force position (2 set bits in mask) to an empty that is a liberty
         void set_liberty(Mask mask) {
@@ -696,13 +687,13 @@ class CountLiberties {
         std::string raw_column_string() const;
 
         // Remove the down pointer to the current group looking up
-        void _terminate_up(Mask down_mask, ColumnOnly value);
+        void terminate_up(Mask down_mask, Topology value);
         // Remove the up pointer to the current group looking down
-        void _terminate_down(Mask up_mask, ColumnOnly value);
+        void terminate_down(Mask up_mask, Topology value);
         // Go to the top of the current group and make it point up
-        void _join_up(Mask stone_mask, ColumnOnly value);
+        void join_up(Mask stone_mask, Topology value);
         // Go to the bottom of the current group and make it point down
-        void _join_down(Mask stone_mask, ColumnOnly value);
+        void join_down(Mask stone_mask, Topology value);
 
         // Check if 2 compressed columns have equal Column bits
         friend bool equal(CompressedColumn const& lhs, CompressedColumn const& rhs);
@@ -739,12 +730,7 @@ class CountLiberties {
         void clear_stone_mask(Mask mask) {
             _column(_column() & ~mask.value());
         }
-        // Add the bits from mask to index_mask (or operation)
-        // Then check if any *NON* correspondig columns bits are set
-        auto any_empty(Mask index_mask, uint64_t mask = 0, uint shift = Mask::shift64) const -> bool;
-        auto nr_empty(Mask index_mask,
-                      uint64_t mask,
-                      uint shift = Mask::shift64) const -> uint;
+        auto nr_empty(Mask topology_mask, uint64_t mask) const -> uint;
 
       private:
         // The actual column data is in the COMPRESSED_SIZE MSBs
@@ -810,22 +796,20 @@ class CountLiberties {
         // Get the string of history bits (grouped by 8)
         std::string history_bitstring() const;
 
-        // Return a new entry created from the current one after applying a mask
-        Entry backbone(uint64_t mask) const {
-            Entry temp;
-            temp._column(_column() & mask);
-            return temp;
-        }
         // An Entry that is not equal to any valid column
-        static Entry invalid(uint64_t base = BLACK_UP) {
+        ALWAYS_INLINE
+        static Entry invalid() {
             Entry temp;
-            temp._column(base << Mask::shift64);
+            temp._column(BLACK_UP << Mask::shift64);
             return temp;
         }
-        // An Entry containing index_mask with the first and last 1 removed
-        // E.g 0001100...01100 becomes 0000100...01000
-        static Entry full(CompressedColumn::Mask index_mask) {
-            uint64_t mask = index_mask.value();
+        // An entry with all stones indicated by topology_mask filled in
+        // and all stones are connected. The empties are all LIBERTYs
+        static Entry full(CompressedColumn::Mask topology_mask) {
+            // Take topology_mask and remove the first and last 1
+            // E.g 0001100...01100 becomes 0000100...01000
+            // so [BLACK_UP BLACK_UP_DOWN* BLACK_DOWN] or just [BLACK]
+            uint64_t mask = topology_mask.value();
             mask &= (UINT64_C(-1) >> 1) >> clz(mask);
             mask &= mask - 1;
             Entry result;
@@ -1102,7 +1086,7 @@ class CountLiberties {
         // Normally find returns an iterator to the position or end()
         // Instead we return a direct pointer to the position or nullptr
         // (match based on only the Column bits without history and liberties)
-        value_type* find(Entry entry) {
+        Entry* find(Entry entry) {
             // dump();
             size_type pos = entry.fast_hash(shift_);
             // std::cout << "Try pos " << pos << "\n";
@@ -1117,7 +1101,7 @@ class CountLiberties {
             while (true) {
                 if (arena_[pos].entry.column() == column) {
                     // std::cout << "Found at DIB " << add2-1 << "\n";
-                    return &arena_[pos];
+                    return &arena_[pos].entry;
                 }
                 pos = (pos + add) & mask_;
                 // std::cout << "Retry pos " << pos << "\n";
@@ -1133,7 +1117,7 @@ class CountLiberties {
         // Same as normal find, but we find entries by only looking at the bits
         // determined by mask
         // (always use the same mask or no mask)
-        value_type* find(Entry entry, CompressedColumn::Mask mask) {
+        Entry* find(Entry entry, CompressedColumn::Mask mask) {
             // dump();
             uint64_t column = entry._column() & mask.value();
             size_type pos = Entry::_fast_hash(column, shift_);
@@ -1148,7 +1132,7 @@ class CountLiberties {
             while (true) {
                 if ((arena_[pos].entry._column() & mask.value()) == column) {
                     // std::cout << "Found at DIB " << add2-1 << "\n";
-                    return &arena_[pos];
+                    return &arena_[pos].entry;
                 }
                 pos = (pos + add) & mask_;
                 // std::cout << "Retry pos " << pos << "\n";
@@ -1212,11 +1196,12 @@ class CountLiberties {
             work_mutex_.unlock();
         }
 #endif /* CONDITION_VARIABLE */
-        void alloc_arenas(EntrySet::value_type*& ptr, size_t max_map, size_t max_backbone) {
+        // Allocate memory for the class hashes and the topologu hash
+        void alloc_arenas(EntrySet::value_type*& ptr, size_t max_map, size_t max_topology) {
             maps_[0].alloc_arena(ptr, max_map);
             maps_[1].alloc_arena(ptr, max_map);
             maps_[2].alloc_arena(ptr, max_map);
-            backbone_set.alloc_arena(ptr, max_backbone);
+            topology_set.alloc_arena(ptr, max_topology);
         }
       public:
         uint real_max CACHE_ALIGNED;
@@ -1225,9 +1210,13 @@ class CountLiberties {
         // Highest index we've seen in this thread (during entry transfer)
         Stones max_classes;
       private:
+        // We need up to 3 output EntrySets while processing a bump
+        // (4 really but by being careful about the order we can already send
+        //  out the first before the last is needed)
         std::array<EntrySet, 3> maps_;
       public:
-        EntrySet backbone_set;
+        // Lookup topology part only. Used to prune during entry_transfer
+        EntrySet topology_set;
         // Column with 1 or 0 chains with the most liberties (new_max)
         Entry max_entry;
         // Stone distribution of max_entry
@@ -1393,7 +1382,7 @@ class CountLiberties {
         void finish() {
             operation_ = FINISH;
         }
-        uint save_execute(CountLiberties* count_liberties, uint ttop = 1) {
+        uint save_execute(CountLiberties* count_liberties, Stones::value_type ttop = 1) {
             auto tmp = save_thread_;
             auto op = operation_;
             save_thread_ = 1;
@@ -1407,7 +1396,7 @@ class CountLiberties {
         // Only start as many threads as needed if there is not enough work
         // If any thread had an exception rethrow it in the main thread
         // (if multiple threads die only the last exception is rembered)
-        uint execute(CountLiberties* count_liberties, uint ttop) {
+        uint execute(CountLiberties* count_liberties, Stones::value_type ttop) {
             if (ttop == 0) fatal("No work to start (operation " + std::to_string(operation_) + ")");
             uint threads = ttop < nr_threads() ? ttop : nr_threads();
             work_prepare();
@@ -1457,7 +1446,7 @@ class CountLiberties {
         void _do_work(CountLiberties* countliberties, ThreadData& threads_data);
 
         // Counter of work still te be done
-        std::atomic_int atop_;
+        std::atomic<Stones::value_type> atop_;
         // How many threads are left that still haven't returned to WAITING
         std::atomic_int threads_left_;
         // Per thread data
@@ -1486,12 +1475,25 @@ class CountLiberties {
         bool has_eptr_;
     };
 
+    // Args was introduces because the common argument set of some important
+    // functions was growing longer and longer. This collects them all
+    // Should possibly just be made part of per thread data
     struct Args {
+        // Set after putting down nothing (map0) or a stone (map1)
         EntrySet *map0, *map1;
+        // Position of the stone
         int pos;
-        Stones index0, rindex0;
-        Stones index1, rindex1;
-        int filter, record;
+        // Before: stones0 (pos was empty) or stones1 (pos was stone)
+        // After:
+        //    - put nothing on pos: stones0 or rstones0 (if reversed)
+        //    - put stone   on pos: stones1 or rstones1 (if reversed)
+        Stones stones0, rstones0;
+        Stones stones1, rstones1;
+        //   -1: put nothing
+        //    0: no filter (yet)
+        //    1: put stone
+        int filter;
+        int record;
         uint64_t old_min;
     };
 
@@ -1532,9 +1534,9 @@ class CountLiberties {
 
     void expand(Column& column, CompressedColumn const& compressed, Stones from) const;
     // Return true if and only if "compressed" contains more than 1 chain
-    // mask is a backbone_mask indicating which intersections are stones
-    bool multichain(CompressedColumn const& compressed, CompressedColumn::Mask mask) const {
-        return compressed.multichain(mask);
+    // mask is a topology_mask indicating which vertices are stones
+    bool multichain(CompressedColumn const& compressed, CompressedColumn::Mask topology_mask) const {
+        return compressed.multichain(topology_mask);
     }
 
     void insert(ThreadData& thread_data, EntrySet* map, Entry const entry) HOT;
@@ -1550,36 +1552,36 @@ class CountLiberties {
     ALWAYS_INLINE
     auto nr_classes() const { return nr_classes_; }
     ALWAYS_INLINE
-    auto nr_keys(Stones i) const {
-        // std::cout << "    nr_keys(" << i << ")=" << classes_[i.index()].size() << "\n";
+    size_t nr_entries(Stones i) const {
+        // std::cout << "    nr_entries(" << i << ")=" << classes_[i.index()].size() << "\n";
         return class_entries(i).size();
     }
-    auto nr_keys() const {
+    auto nr_entries() const {
         size_type size = 0;
         for (auto const& entries: classes_)
             size += entries.size();
         return size;
     }
-    auto nr_keys_max() const {
+    auto nr_entries_max() const {
         size_type size = 0;
         // We consider the injection entry seperately here
         for (auto const& entries: classes_)
             if (entries.size() > size) size = entries.size();
         return size;
     }
-    auto nr_keys_min() const {
+    auto nr_entries_min() const {
         // We combine the injection entry with classes_[0] here otherwise we
         // will always get 0 or 1
-        size_type size = nr_keys(no_stones()) + classes_[nr_classes()].size();
+        size_type size = nr_entries(no_stones()) + classes_[nr_classes()].size();
         for (auto i=one_stone(); i < Stones{nr_classes()}; ++i)
-            if (nr_keys(i) < size && nr_keys(i)) size = nr_keys(i);
+            if (nr_entries(i) < size && nr_entries(i)) size = nr_entries(i);
         return size;
     }
     auto nr_classes_non_empty() const {
-        uint nr_classes_non_empty = nr_keys(no_stones()) + classes_[nr_classes()].size() ?
+        uint nr_classes_non_empty = nr_entries(no_stones()) + classes_[nr_classes()].size() ?
             1 : 0;
         for (auto i=one_stone(); i < Stones{nr_classes()}; ++i)
-            if (nr_keys(i)) ++nr_classes_non_empty;
+            if (nr_entries(i)) ++nr_classes_non_empty;
         return nr_classes_non_empty;
     }
     auto maximum_history(int bit) const {
@@ -1639,36 +1641,37 @@ class CountLiberties {
     void call_sym_final(int pos, ThreadData& thread_data) HOT;
     void call_asym_final(int pos, ThreadData& thread_data) HOT;
 
-    void inject(Direction direction, Args args, ThreadData& thread_data, Stones stones, Stones::value_type up) HOT;
-    void process(Direction direction, Args const args, ThreadData& thread_data) HOT;
+    void inject(int direction, Args args, ThreadData& thread_data, Stones stones, Stones::value_type up) HOT;
+    void process(int direction, Args const args, ThreadData& thread_data) HOT;
     void process_down(Args const args, ThreadData& thread_data) HOT;
     void process_up(Args const args, ThreadData& thread_data) HOT;
     void process_final(Args const args, ThreadData& thread_data) HOT;
-    void process_asym(Direction direction, Args const args, ThreadData& thread_data) HOT;
+    void process_asym(int direction, Args const args, ThreadData& thread_data) HOT;
 
     void map_load_factor     (float factor) {
         map_load_multiplier_ = 1. / factor;
     }
-    void backbone_load_factor(float factor) {
-        backbone_load_multiplier_ = 1. / factor;
+    void topology_load_factor(float factor) {
+        topology_load_multiplier_ = 1. / factor;
     }
   private:
-    void _call_asym(Direction direction, int pos, ThreadData& thread_data) HOT;
+    void _call_asym(int direction, int pos, ThreadData& thread_data) HOT;
 
-    void _process(bool inject, Direction direction, Args const args,
+    // Do bump. Before column is in "from"
+    // left_black indicates current pos starts out as a stone
+    void _process(bool inject, int direction, Args const args,
                   Stones from, bool left_black, ThreadData& thread_data) HOT;
     void reserve_thread_maps(size_t max);
-    template <class any>
-    void map_reserve(EntrySet* set, any size) {
+    void map_reserve(EntrySet* set, EntrySet::size_type size) {
         set->reserve(size, map_load_multiplier_);
         if (UNLIKELY(set->used() > max_map_))
             fatal("map overflow used " + std::to_string(set->used()) + " > max_map " + std::to_string(max_map_));
     }
-    template <class any>
-    void backbone_reserve(EntrySet& set, any size) {
-        set.reserve(size, backbone_load_multiplier_);
-        if (UNLIKELY(set.used() > max_backbone_)) fatal("backbone overflow");
+    void topology_reserve(EntrySet& set, EntrySet::size_type size) {
+        set.reserve(size, topology_load_multiplier_);
+        if (UNLIKELY(set.used() > max_topology_)) fatal("topology overflow");
     }
+    // Empty the corresponding Entry vector and release unneeded memory
     void entry_clear(Stones stones) HOT {
         entry_clear(class_entries(stones));
     }
@@ -1697,7 +1700,7 @@ class CountLiberties {
     std::vector<EntryVector> classes_;
     // Helper array so we can look up a column reversal
     Stones* reverse_bits_ = nullptr;
-    CompressedColumn::Mask* index_masks_ = nullptr;
+    CompressedColumn::Mask* topology_masks_ = nullptr;
     // Array of indices that need to be processed by the worker threads
     Stones* indices_ = nullptr;
     EntryVector entry00_;
@@ -1731,11 +1734,11 @@ class CountLiberties {
     // looping over all indices
     Stones max_classes_;
     float map_load_multiplier_;
-    float backbone_load_multiplier_;
+    float topology_load_multiplier_;
     size_t max_map_;
-    size_t max_backbone_;
+    size_t max_topology_;
     size_t threads_arena_map_ = 0;
-    size_t threads_arena_backbone_ = 0;
+    size_t threads_arena_topology_ = 0;
     size_t threads_arena_allocated_ = 0;
     EntrySet::value_type* threads_arena_ = nullptr;
     // Maximum index we ever *use* on indices0_ vector during the current round
@@ -1754,7 +1757,7 @@ class CountLiberties {
     // and frees we put them inside the object
     class Size {
       public:
-        Stones index;
+        Stones stones;
         // size should in principle be a size_t, but the data is spread over the
         // classes_ vector and bucket size remains modest even for the largest
         // board size this program can hope to handle. Therefore an uint will
@@ -1791,7 +1794,7 @@ class CountLiberties {
     // All values are kept at 0 when not in use
     // (due to vector value initialization to 0 we don't need to do this
     //  ourselves on creation or resize)
-    std::vector<int> indices0_;
+    std::vector<Stones::value_type> indices0_;
 };
 
 /* ========================================================================= */
@@ -1974,21 +1977,23 @@ CountLiberties::Column::Column(char const* from, int height) {
 /* ========================================================================= */
 
 ALWAYS_INLINE
-auto CountLiberties::CompressedColumn::any_empty(Mask index_mask, uint64_t mask, uint shift) const -> bool {
-    index_mask |= mask;
-    auto value = (_column() & ~index_mask.value()) >> shift;
+auto CountLiberties::CompressedColumn::any_empty(Mask topology_mask, CompressedColumn mask) const -> bool {
+    topology_mask |= mask._column();
+    auto value = (_column() & ~topology_mask.value()) >> Mask::shift64;
     return value != 0;
 }
 
 ALWAYS_INLINE
-auto CountLiberties::CompressedColumn::nr_empty(Mask index_mask, uint64_t mask, uint shift) const -> uint {
-    index_mask |= mask;
+auto CountLiberties::CompressedColumn::nr_empty(Mask topology_mask, uint64_t mask) const -> uint {
+    topology_mask |= mask;
+   // Left are either EMPTY (11) or LIBERTY (00). So to count EMPTY we count
+   // half the bits
 #ifdef __POPCNT__
-    auto value = (_column() & ~index_mask.value()) >> shift;
-    return half_popcount64(value);
+    auto value = (_column() & ~topology_mask.value()) >> Mask::shift64;
+    return _mm_popcnt_u64(value) / 2;
 #else  /* __POPCNT__ */
-    auto value = _column() & ~index_mask.value();
-    value &= UINT64_C(0x5555555555555555) << shift;
+    auto value = _column() & ~topology_mask.value();
+    value &= UINT64_C(0x5555555555555555) << Mask::shift64;
     // Special implementation of popcount32 for our use case
     uint32_t v = value + (value >> 32);
     v  = (v & 0x33333333) + ((v >> 2) & 0x33333333);
@@ -1998,57 +2003,63 @@ auto CountLiberties::CompressedColumn::nr_empty(Mask index_mask, uint64_t mask, 
 }
 
 // Remove the down pointer to the current group looking up
-void CountLiberties::CompressedColumn::_terminate_up(Mask down_mask, ColumnOnly value) {
+void CountLiberties::CompressedColumn::terminate_up(Mask down_mask, Topology value) {
     int depth = 0;
+    // Shifted value so that a test against down_mask is really up_mask
     auto value2 = value << 1;
     while (true) {
+        // Walk the mask up the board
         down_mask >>= BITS_PER_VERTEX;
         if (value & down_mask) {
             // BLACK_DOWN or BLACK_UP_DOWN
             if (depth <= 0) {
+                // Found corresponding down pointing stone. Remove pointer
                 value_ &= ~down_mask.value();
                 return;
             }
             if (!(value2 & down_mask))
-                // BLACK_DOWN
+                // BLACK_DOWN, end of an inbetween group
                 --depth;
         } else if (value2 & down_mask)
-            // BLACK_UP
+            // BLACK_UP, start of an inbetween group
             ++depth;
     }
 }
 
 // Remove the up pointer to the current group looking down
-void CountLiberties::CompressedColumn::_terminate_down(Mask up_mask, ColumnOnly value) {
+void CountLiberties::CompressedColumn::terminate_down(Mask up_mask, Topology value) {
     int depth = 0;
+    // Shifted value so that a test against up_mask is really down_mask
     auto value2 = value >> 1;
     while (true) {
+        // Walk the mask down the board
         up_mask <<= BITS_PER_VERTEX;
         if (value & up_mask) {
             // BLACK_UP or BLACK_UP_DOWN
             if (depth <= 0) {
+                // Found corresponding up pointing stone. Remove pointer
                 value_ &= ~up_mask.value();
                 return;
             }
             if (!(value2 & up_mask))
-                // BLACK_UP
+                // BLACK_UP, end of an inbetween group
                 --depth;
         } else if (value2 & up_mask)
-            // BLACK_DOWN
+            // BLACK_DOWN, start of an inbetween group
             ++depth;
     }
 }
 
 // Go to the top of the current group and make it point up
-void CountLiberties::CompressedColumn::_join_up(Mask stone_mask, ColumnOnly value) {
-    int depth = 0;
+void CountLiberties::CompressedColumn::join_up(Mask stone_mask, Topology value) {
+    int depth = 1;
     while (true) {
         stone_mask >>= BITS_PER_VERTEX;
         auto vertex = value & stone_mask;
         if (vertex.black_down_mask()) {
             if (!(vertex.black_up_mask())) {
                 // BLACK_DOWN
-                if (depth-- == 0) {
+                if (--depth == 0) {
                     // set to BLACK_UP_DOWN
                     value_ |= stone_mask.value();
                     return;
@@ -2061,8 +2072,8 @@ void CountLiberties::CompressedColumn::_join_up(Mask stone_mask, ColumnOnly valu
 }
 
 // Go to the bottom of the current group and make it point down
-void CountLiberties::CompressedColumn::_join_down(Mask stone_mask, ColumnOnly value) {
-    int depth = 0;
+void CountLiberties::CompressedColumn::join_down(Mask stone_mask, Topology value) {
+    int depth = 1;
     while (true) {
         stone_mask <<= BITS_PER_VERTEX;
         auto vertex = value & stone_mask;
@@ -2070,7 +2081,7 @@ void CountLiberties::CompressedColumn::_join_down(Mask stone_mask, ColumnOnly va
             // BLACK_UP or BLACK_UP_DOWN
             if (!(vertex.black_down_mask())) {
                 // BLACK_UP
-                if (depth-- == 0) {
+                if (--depth == 0) {
                     // set to BLACK_UP_DOWN
                     value_ |= stone_mask.value();
                     return;
@@ -2083,13 +2094,13 @@ void CountLiberties::CompressedColumn::_join_down(Mask stone_mask, ColumnOnly va
 }
 
 // Return true if and only if Column contains more than 1 chain
-// mask is a backbone_mask indicating which intersections are stones
-inline bool CountLiberties::CompressedColumn::multichain(Mask mask) const {
+// mask is a topology_mask indicating which vertices are stones
+inline bool CountLiberties::CompressedColumn::multichain(Mask topology_mask) const {
     // ~ column changes BLACK and BLACK_UP to 11 and 10 respectively
     // & 0xAAAAAAAAAAAAAAAA changes them both to 10 (and other blacks are 00)
     // & Mask::column_mask64 gets rid of history and liberties
-    // & mask gets rid of EMPTY/LIBERTY
-    uint64_t bits = (~_column() & (UINT64_C(0xAAAAAAAAAAAAAAAA) & Mask::column_mask64) & mask.value());
+    // & topology_mask gets rid of EMPTY/LIBERTY
+    uint64_t bits = (~_column() & (UINT64_C(0xAAAAAAAAAAAAAAAA) & Mask::column_mask64) & topology_mask.value());
     // bits now contains as many 1 bits as there are chains
     // reverse power of 2 check (0 is considered a power of 2 which is wanted)
     return (bits & (bits - 1)) != 0;
@@ -2373,7 +2384,7 @@ void CountLiberties::record_by_cost() {
             }
         }
         if (max < 0.) fatal("No max");
-        // print "Add record [$max_x0, $max_y0] at $max_pos [@nr_keys_guess]\n";
+        // print "Add record [$max_x0, $max_y0] at $max_pos [@nr_entries_guess]\n";
         record(max_x0, max_y0);
         cost_propagate(max_x0, max_y0);
     }
@@ -2452,12 +2463,12 @@ void CountLiberties::CompressedColumn::expand(Column& expanded,
 void CountLiberties::sym_compress(CompressedColumn& compressed, Stones stones, Stones rstones) const {
     int64_t value  = compressed.column();
     int64_t rvalue = 0;
-    int compressed_height = (height()+3) / 4;
+    int compressed_height = (height()+(VERTICES_PER_BYTE-1))/VERTICES_PER_BYTE;
     for (int i=0; i < compressed_height; ++i) {
         rvalue = rvalue << 8 | bit_reverse_table_[value & 0xff];
         value >>= 8;
     }
-    rvalue >>= (-height() & (8/BITS_PER_VERTEX-1)) * BITS_PER_VERTEX;
+    rvalue >>= (-height() & (VERTICES_PER_BYTE-1)) * BITS_PER_VERTEX;
     if (stones == rstones) {
         value = compressed.column();
         if (value <= rvalue) return;
@@ -2503,10 +2514,10 @@ auto CountLiberties::signature() -> uint64_t {
     size_t max = 0;
     auto* sizes = &sizes_[0];
     for (auto i = CountLiberties::no_stones(); i <= max_classes_; ++i) {
-        auto size = nr_keys(i);
+        auto size = nr_entries(i);
         if (size > 0) {
-            sizes->index = i;
-            sizes->size  = size;
+            sizes->stones = i;
+            sizes->size   = size;
             ++sizes;
             if (size > max) {
                 max = size;
@@ -2526,7 +2537,7 @@ auto CountLiberties::signature() -> uint64_t {
         ++max;
         if (max > max_size_) max_size_ = max;
         // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
-        uint accu = 0;
+        Stones::value_type accu = 0;
         for (uint i=0; i < max; ++i) {
             auto tmp = indices0[i];
             indices0[i] = accu;
@@ -2534,18 +2545,18 @@ auto CountLiberties::signature() -> uint64_t {
         }
         auto* indices  = &indices_[0];
         for (auto s = &sizes_[0]; s < sizes; ++s)
-            indices[indices0[s->size]++] = s->index;
+            indices[indices0[s->size]++] = s->stones;
         // Restore indices0 to be completely 0
         std::memset(indices0, 0, max*sizeof(indices0[0]));
 
         // At this point array indices is filled with non empty indices
         // sorted by count (highest last, so will be processed first)
 
-        int ttop = sizes - &sizes_[0];
+        auto ttop = accu;
         if (0) {
             std::cout << "Signature=" << ttop << "non zero buckets\n";
-            for (int i=0; i<ttop; ++i) {
-                std::cout << "    index " << indices[i] << ": size " << nr_keys(indices[i]) << "\n";
+            for (Stones::value_type i=0; i<ttop; ++i) {
+                std::cout << "    index " << indices[i] << ": size " << nr_entries(indices[i]) << "\n";
             }
         }
 
@@ -2558,10 +2569,15 @@ auto CountLiberties::signature() -> uint64_t {
     return signature;
 }
 
+// Takes the filled Entryset "map" (result of bump movement), converts it
+// to an EntryVector and stores it in the proper class slot
+// (since the input classes and output classes for one step are the same
+// this also cleans up old EntryVectors)
+// It does some pruning while doing all this
 void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Stones stones, uint pos, Stones::value_type up, Stones::value_type down) {
     if (DEBUG_STORE)
         std::cout << "   Write entryset " << stones << "\n";
-    auto& entries	= class_entries(stones);
+    auto& entries = class_entries(stones);
     if (map->empty()) {
         entry_clear(entries);
         if (DEBUG_STORE)
@@ -2569,12 +2585,12 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
         return;
     }
 
-    auto& backbone_set	= thread_data.backbone_set;
-    auto index_mask	= index_masks_[stones.index()];
+    auto& topology_set = thread_data.topology_set;
+    auto topology_mask = topology_masks_[stones.index()];
 
     entries.clear();
     entries.reserve(map->size());
-    backbone_reserve(backbone_set, map->size());
+    topology_reserve(topology_set, map->size());
     auto   up_mask = CompressedColumn::Mask::stone_mask(pos);
     auto down_mask = CompressedColumn::Mask::stone_mask(height() - 1 - pos);
     // std::cout << "map size=" << map->size() << "\n";
@@ -2587,7 +2603,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
         uint64_t liberties{entry.liberties()};
 
         if (liberties <= full_liberties) {
-            auto libs = liberties + entry.nr_empty(index_mask);
+            auto libs = liberties + entry.nr_empty(topology_mask);
             // std::cout << "Entry " << column_string(entry, stones) << " raw liberties " << liberties << ", libs=" << libs << "\n";
             if (libs < full_liberties) continue;
             if (libs == full_liberties && !equal(entry, full_entry_))
@@ -2601,8 +2617,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
                 probe.set_liberty(up_mask);	// Set LIBERTY
                 auto found = map->find(probe);
                 if (found)
-                    if (liberties < found->entry.liberties()) {
-                        // std::cout << "up 1 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, stones) << " raw libs=" << found->entry.liberties() << std::endl;
+                    if (liberties < found->liberties()) {
+                        // std::cout << "up 1 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(*found, stones) << " raw libs=" << found->liberties() << std::endl;
                         continue;
                     }
             } else {
@@ -2611,8 +2627,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
                 probe.set_empty(up_mask);	// Set EMPTY
                 auto found = map->find(probe);
                 if (found)
-                    if (liberties <= found->entry.liberties()) {
-                        // std::cout << "up 2 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, stones) << " raw libs=" << found->entry.liberties() << std::endl;
+                    if (liberties <= found->liberties()) {
+                        // std::cout << "up 2 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(*found, stones) << " raw libs=" << found->liberties() << std::endl;
                         continue;
                     }
             }
@@ -2624,8 +2640,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
                 probe.set_liberty(down_mask);	// Set LIBERTY
                 auto found = map->find(probe);
                 if (found)
-                    if (liberties < found->entry.liberties()) {
-                        // std::cout << "down 1 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, stones) << " raw libs=" << found->entry.liberties() << std::endl;
+                    if (liberties < found->liberties()) {
+                        // std::cout << "down 1 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(*found, stones) << " raw libs=" << found->liberties() << std::endl;
                         continue;
                     }
             } else {
@@ -2634,8 +2650,8 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
                 probe.set_empty(down_mask);	// Set EMPTY
                 auto found = map->find(probe);
                 if (found)
-                    if (liberties <= found->entry.liberties()) {
-                        // std::cout << "down 2 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, stones) << " raw libs=" << found->entry.liberties() << std::endl;
+                    if (liberties <= found->liberties()) {
+                        // std::cout << "down 2 " << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(*found, stones) << " raw libs=" << found->liberties() << std::endl;
                         continue;
                     }
             }
@@ -2644,16 +2660,16 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
         //if (0)
         //    std::cout <<
         //        "I Entry: "     << column_string(entry,    stones) <<
-        //        ", Bacbone: " << column_string(backbone, stones) <<
-        //        " (raw liberties=" << backbone.liberties() << ")\n";
+        //        ", Bacbone: " << column_string(topology, stones) <<
+        //        " (raw liberties=" << topology.liberties() << ")\n";
         EntrySet::value_type* result;
 
-        if (backbone_set.insert(entry, result, index_mask)) {
+        if (topology_set.insert(entry, result, topology_mask)) {
             if (liberties > result->entry.liberties())
                 result->entry = entry;
             else if (liberties == result->entry.liberties()) {
-                auto new_empty = entry.nr_empty(index_mask);
-                auto old_empty = result->entry.nr_empty(index_mask);
+                auto new_empty = entry.nr_empty(topology_mask);
+                auto old_empty = result->entry.nr_empty(topology_mask);
                 if (new_empty > old_empty)
                     result->entry = entry;
                 else if (new_empty == old_empty) {
@@ -2669,14 +2685,14 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
 
         entries.emplace_back(entry);
     }
-    // std::cout << "backbone size=" << backbone_set.size() << "\n";
+    // std::cout << "topology size=" << topology_set.size() << "\n";
 
-    // Maximum within this stones
-    Entry full = Entry::full(index_mask);
-    auto found_full = backbone_set.find(full, index_mask);
+    // Fully connected column with these stones
+    Entry full = Entry::full(topology_mask);
+    auto found_full = topology_set.find(full, topology_mask);
     full_liberties = 0;
     if (found_full) {
-        full = found_full->entry;
+        full = *found_full;
         full_liberties = full.liberties();
     }
     size_t nr_entries = 0;
@@ -2684,14 +2700,14 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
     // The program logic ensures that entries is already cleared and shrunk
     uint64_t new_min = thread_data.new_min;
     uint64_t new_max = thread_data.new_max;
-    if (backbone_set.size() == entries.size()) {
-        // If the sizes are equal no backbone pruning can happen
+    if (topology_set.size() == entries.size()) {
+        // If the sizes are equal no topology pruning can happen
         // But we can still get full based pruning
         for (auto const entry: entries) {
             uint64_t liberties{entry.liberties()};
 
             if (liberties <= full_liberties) {
-                uint64_t nr_empty = entry.nr_empty(index_mask, full);
+                uint64_t nr_empty = entry.nr_empty(topology_mask, full);
                 if (liberties + nr_empty <= full_liberties &&
                     !equal(entry, full)) continue;
             }
@@ -2701,7 +2717,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
             if (liberties > new_max) {
                 if (liberties > thread_data.real_max)
                     thread_data.real_max = liberties;
-                if (!multichain(entry, index_mask)) {
+                if (!multichain(entry, topology_mask)) {
                     // If we get here there are NOT two or more different chains
                     // So no chains or 1 connected chain
                     new_max   = liberties;
@@ -2727,27 +2743,27 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
             //if (0)
             //    std::cout <<
             //        "O Entry: "     << column_string(entry,    stones) <<
-            //        ", Bacbone: " << column_string(backbone, stones) <<
-            //        " (raw liberties=" << backbone.liberties() << ")\n";
+            //        ", Bacbone: " << column_string(topology, stones) <<
+            //        " (raw liberties=" << topology.liberties() << ")\n";
 
             if (liberties <= full_liberties) {
-                uint64_t nr_empty = entry.nr_empty(index_mask, full);
+                uint64_t nr_empty = entry.nr_empty(topology_mask, full);
                 if (liberties + nr_empty <= full_liberties &&
                     !equal(entry, full)) continue;
             }
 
-            auto found = backbone_set.find(entry, index_mask);
+            auto found = topology_set.find(entry, topology_mask);
             // Interesting. Doing this test makes the program marginally faster
-            if (!found) fatal("Did not find entry backbone");
-            if (!equal(entry, found->entry)) {
-                uint64_t max_liberties = found->entry.liberties();
-                uint64_t nr_empty = entry.nr_empty(index_mask, found->entry);
+            if (!found) fatal("Did not find entry topology");
+            if (!equal(entry, *found)) {
+                uint64_t max_liberties = found->liberties();
+                uint64_t nr_empty = entry.nr_empty(topology_mask, *found);
                 // std::cout << "nr_empty=" << nr_empty << "\n";
                 // if (liberties + nr_empty <= max_liberties) continue;
                 if (liberties + nr_empty <= max_liberties) {
                     if (liberties + nr_empty < max_liberties || nr_empty ||
-                        found->entry.any_empty(index_mask, entry)) {
-                        // std::cout << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(found->entry, stones) << " raw libs=" << max_liberties << " nr_empty=" << nr_empty << std::endl;
+                        found->any_empty(topology_mask, entry)) {
+                        // std::cout << column_string(entry, stones) << " raw libs=" << liberties << " pruned by " << column_string(*found, stones) << " raw libs=" << max_liberties << " nr_empty=" << nr_empty << std::endl;
                         continue;
                     }
                 }
@@ -2758,7 +2774,7 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
             if (liberties > new_max) {
                 if (liberties > thread_data.real_max)
                     thread_data.real_max = liberties;
-                if (!multichain(entry, index_mask)) {
+                if (!multichain(entry, topology_mask)) {
                     // If we get here there are NOT two or more different chains
                     // So no chains or 1 connected chain
                     new_max   = liberties;
@@ -2786,10 +2802,10 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
     // std::cout << "entries size=" << entries.size() << "\n";
 
     map->clear();
-    backbone_set.clear();
+    topology_set.clear();
     // This is a slight speedup. Possibly because it does not delay fixing
     // up the TERMINATOR position (it's still in cache now)
-    backbone_reserve(backbone_set, 0);
+    topology_reserve(topology_set, 0);
     // Shrink since we probably pruned
     if (DEBUG_STORE)
         std::cout << "   Close entryset " << stones << "\n";
@@ -2806,9 +2822,9 @@ void CountLiberties::entry_transfer(ThreadData& thread_data, EntrySet* map, Ston
 // shows that the bad pruning never happens so this code is not actually needed.
 // But I am unable to prove that this is so for column positions < 3. So I leave
 // this method in. The slowdown this causes is extremely minor anyways
-void CountLiberties::inject(Direction direction, Args args,
+void CountLiberties::inject(int direction, Args args,
                             ThreadData& thread_data, Stones stones, Stones::value_type up) {
-    map_reserve(args.map1, 1 + class_entries(stones).size());
+    map_reserve(args.map1, 1 + nr_entries(stones));
     // We could optimize this.
     // If there already is an entry in classes_[stones] it will always prune the
     // entry created by inject EXCEPT on the second column along the sides
@@ -2851,10 +2867,10 @@ void CountLiberties::inject(Direction direction, Args args,
 }
 
 ALWAYS_INLINE
-void CountLiberties::process(Direction direction, Args const args,
+void CountLiberties::process(int direction, Args const args,
                              ThreadData& thread_data) {
-    _process(false, direction, args, args.index0, false, thread_data);
-    _process(false, direction, args, args.index1, true,  thread_data);
+    _process(false, direction, args, args.stones0, false, thread_data);
+    _process(false, direction, args, args.stones1, true,  thread_data);
 }
 
 // Inline because it only has 1 call site
@@ -2874,7 +2890,7 @@ void CountLiberties::process_final(Args const args, ThreadData& thread_data) {
 }
 
 ALWAYS_INLINE
-void CountLiberties::process_asym(Direction direction, Args const args, ThreadData& thread_data) {
+void CountLiberties::process_asym(int direction, Args const args, ThreadData& thread_data) {
     if (direction)
         process_up(args, thread_data);
     else
@@ -2884,8 +2900,9 @@ void CountLiberties::process_asym(Direction direction, Args const args, ThreadDa
 // This is the core logic of the whole program.
 // Add a bump in the given direction (0 combines two bumps to a flat column)
 // Apply symmetry at the end (except when going down, direction > 0)
+// left_black indicates that we start with a stone on pos
 ALWAYS_INLINE
-void CountLiberties::_process(bool inject, Direction direction, Args args,
+void CountLiberties::_process(bool inject, int direction, Args args,
                               Stones from, bool left_black,
                               ThreadData& thread_data) {
 #if NDEBUG
@@ -2898,72 +2915,78 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
         fatal("inlining did not make left_black a constant");
 #endif /* NDEBUG */
 
-    // std::cout << "   From: " << from << "[[" << args.index0 << ", " << args.index1 << "], [" << args.rindex0 << ", " << args.rindex1 << "]] (final)\n";
+    // std::cout << "   From: " << from << "[[" << args.stones0 << ", " << args.stones1 << "], [" << args.rstones0 << ", " << args.rstones1 << "]] (final)\n";
 
-    uint pos2 = CompressedColumn::Mask::stone_shift(args.pos);
+    uint stone_shift = CompressedColumn::Mask::stone_shift(args.pos);
 
     uint up_black, down_black, up_or_down_black;
     CompressedColumn::Mask up_mask, down_mask;
     bool liberty_prune = false;
     // Short circuit the test. compiler dead code elimination will do it for us
-    if (true || direction >= 0) {
+    if (direction >= 0) {
         // Make sure that args.pos == 0 works and results in up_black == 0
-        // Should really be based on from, but args.index0 has the same bits
+        // Should really be based on from, but args.stones0 has the same bits
         // at position args.pos-1
         // up_black = from.up_stone(args.pos);
-        up_black = args.index0.up_stone(args.pos);
+        up_black = args.stones0.up_stone(args.pos);
 
     	up_mask = up_black ?
-            CompressedColumn::Mask::_stone_mask(pos2 - BITS_PER_VERTEX, BLACK_DOWN) :
-            args.pos ? CompressedColumn::Mask::_stone_mask(pos2 - BITS_PER_VERTEX) : CompressedColumn::Mask::_stone_mask(0, 0);
+            CompressedColumn::Mask::_stone_mask(stone_shift - BITS_PER_VERTEX, BLACK_DOWN) :
+            args.pos ? CompressedColumn::Mask::_stone_mask(stone_shift - BITS_PER_VERTEX) : CompressedColumn::Mask::_stone_mask(0, 0);
         // auto const up_black_down	= up_mask & BLACK_DOWN_MASK;
-        // Test should be against (from & 0x2), but args.index0 has the same bit
+        // Test should be against (from & 0x2), but args.stones0 has the same bit
         // Need height != 2 otherwise the reverses make both sides impossible
         if (PRUNE_SIDES && direction > 0 && args.pos == 0 && height() != 2) {
             // std::cout << "Hit up" << std::endl;
-             liberty_prune = true;
+            liberty_prune = true;
+            // Never put two consecutive stones directly below the top edge
             if (left_black) args.filter = -1;
         }
     }
 
     // Short circuit the test. compiler dead code elimination will do it for us
-    if (true || direction <= 0) {
-        // Should really be based on from, but args.index0 has the same bits
+    if (direction <= 0) {
+        // Should really be based on from, but args.stones0 has the same bits
         // at position args.pos+1
         // down_black = from.down_stone(args.pos);
-        down_black = args.index0.down_stone(args.pos);
+        down_black = args.stones0.down_stone(args.pos);
 
         // We need to test args.pos. Normally you would think that if too big
         // the stone mask will shift out. However with the barrel shifter of
         // modern CPUs it will actually not shift at all
         down_mask	= down_black ?
-            CompressedColumn::Mask::_stone_mask(pos2 + BITS_PER_VERTEX, BLACK_UP) :
+            CompressedColumn::Mask::_stone_mask(stone_shift + BITS_PER_VERTEX, BLACK_UP) :
             args.pos < EXPANDED_SIZE-1 ?
-                       CompressedColumn::Mask::_stone_mask(pos2 + BITS_PER_VERTEX) : CompressedColumn::Mask::_stone_mask(0,0);
+                       CompressedColumn::Mask::_stone_mask(stone_shift + BITS_PER_VERTEX) : CompressedColumn::Mask::_stone_mask(0,0);
         // auto const down_black_up	= down_mask & BLACK_UP_MASK;
         // No need to check for height != 2 since that never has direction < 0
         if (PRUNE_SIDES && direction < 0 && args.pos == height()-1) {
             liberty_prune = true;
             // std::cout << "Hit down" << std::endl;
+            // Never put two consecutive stones directly above the bottom edge
             if (left_black) args.filter = -1;
         }
     }
 
     // Short circuit the test. compiler dead code elimination will do it for us
-    if (true || direction == 0) up_or_down_black = up_black | down_black;
+    if (direction == 0) up_or_down_black = up_black | down_black;
 
-    bool sym0 = direction <= 0 && args.index0 >= args.rindex0;
-    bool sym1 = direction <= 0 && args.index1 >= args.rindex1;
+    // Will we need to mirror after putting nothing ?
+    bool sym0 = direction <= 0 && args.stones0 >= args.rstones0;
+    // Will we need to mirror after putting a stone ?
+    bool sym1 = direction <= 0 && args.stones1 >= args.rstones1;
 
-    auto const stone_mask	= CompressedColumn::Mask::_stone_mask(pos2);
+    // Select current vertex
+    auto const stone_mask	= CompressedColumn::Mask::_stone_mask(stone_shift);
+    // Masks to check if the curent stone connected up/down/up_down
     auto const black_up		= stone_mask.black_up_mask();
     auto const black_down	= stone_mask.black_down_mask();
     auto const black_up_down	= stone_mask; // stone_mask & BLACK_UP_DOWN_MASK
 
-    // index_mask should be based on from, but except at the current position
-    // args.index0 has the same bits and we will never look at the different bit
-    // auto index_mask	= index_masks_[from.index()];
-    auto index_mask	= index_masks_[args.index0.index()];
+    // topology_mask should be based on from, but except at the current position
+    // args.stones0 has the same bits and we will never look at the different bit
+    // auto topology_mask	= topology_masks_[from.index()];
+    auto topology_mask	= topology_masks_[args.stones0.index()];
 
     if (DEBUG_FETCH) std::cout << "   Read entryset " << from << "\n";
 
@@ -2979,11 +3002,12 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
                 entry.history_bitstring() << ")\n";
         }
 
-        auto left = entry._get_vertex(pos2);
+        auto left = entry.get_vertex(stone_shift);
         // std::cout << "left=" << left << ", left_black = " << left_black << "\n";
 
         // Set empty
         if (args.filter <= 0) {
+            // No filter or put nothing
             Entry result = entry;
             if (left_black) {
                 if (left == BLACK) {
@@ -2991,11 +3015,11 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
                     // disconnection. Losing the last chain is ok however
                     // as long as we won't accept putting a new stone later
                     // (except if no stones at all have been added yet)
-                    if (args.index0) goto BLACK_STONE;
+                    if (args.stones0) goto BLACK_STONE;
                 } else if (left == BLACK_UP) {
-                    result._terminate_up(black_down, result.test_vertex(index_mask));
+                    result.terminate_up(black_down, result.test_vertex(topology_mask));
                 } else if (left == BLACK_DOWN) {
-                    result._terminate_down(black_up, result.test_vertex(index_mask));
+                    result.terminate_down(black_up, result.test_vertex(topology_mask));
                 }
                 // BLACK_UP_DOWN stays connected so nothing to do
 
@@ -3011,14 +3035,14 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
                 result.set_empty(stone_mask);	// sets EMPTY
             }
 
-            if (sym0) sym_compress(result, args.index0, args.rindex0);
+            if (sym0) sym_compress(result, args.stones0, args.rstones0);
             // The history map is initialized with zeroes so record0 is a no op
             // result.record0(args.record);
             if (DEBUG_FLOW) {
                 std::cout << "         Empty: '" <<
-                    column_string(result, sym0 ? args.rindex0 : args.index0) <<
+                    column_string(result, sym0 ? args.rstones0 : args.stones0) <<
                     "' -> " << result.liberties(offset_) << " (" <<
-                    result.history_bitstring() << ") set=" << (sym0 ? args.rindex0 : args.index0) << "\n";
+                    result.history_bitstring() << ") set=" << (sym0 ? args.rstones0 : args.stones0) << "\n";
             }
             if (inject) entry00_.emplace_back(result);
             else insert(thread_data, args.map0, result);
@@ -3028,29 +3052,37 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
         // Set black
 
         // Avoid complete disconnect. Notice that we used to also test
-        // for libs + offset_ here so we would keep empty columns were no
+         // for libs + offset_ here so we would keep empty columns were no
         // stone was ever placed. These however get added back by inject()
         if (inject || from) {
             if (args.filter < 0) continue;
+            // No filter or put stone
 
             Entry& result = entry;
 
+            // nogain checks for the following situation:
+            // .L
+            // LX
+            // .L
+            // Putting a stone on X never gains anything and may be a loss
             // nogain should be eliminated by the compiler unless direction == 0
             int nogain = 3;
+
             if (!left_black) {
                 if (left != (LIBERTY & STONE_MASK)) {
-                    // EMPTY
-                    // Set to LIBERTY,except that we will immediately set BLACK
-                    // result.set_liberty(stone_mask);
-                    result.set_black(stone_mask);	// sets BLACK
+                    // EMPTY which will become a LIBERTY when putting down black
+                    result.set_black(stone_mask);
                     result.liberties_add(1);
                 } else {
                     // LIBERTY
+                    // direction and inject are compile time constants
+                    // So use them to short circuit this
+                    // Don't put a stone after a liberty at top or bottom
                     if (direction != 0 && liberty_prune) continue;
                     if (direction == 0 && !inject) --nogain;
                     // We don't need to set to BLACK since LIBERTY and BLACK
                     // use the same bits
-                    // result.set_black(stone_mask);	// sets BLACK
+                    // result.set_black(stone_mask);
                 }
                 left = BLACK;
             }
@@ -3058,8 +3090,9 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
             if (direction >= 0) {
                 // std::cout << "up=" << up << ", up_black = " << up_black << "\n";
                 if (up_black) {
-                    // Join
+                    // There was a stone above. Join
                     auto up = entry.test_vertex(up_mask);
+                    // Check if the stone above has a DOWN flag
                     if (up) {
                         if (left & BLACK_UP) {
                             // They were already connected, so we just created
@@ -3069,25 +3102,35 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
                             // this for itself
                             if (PRUNE_LOOPS) continue;
                         } else {
+                            // This stone wasn't connected upward yet
+                            // But now it will be and it inherits the down flag
+                            // from the stone above
                             result.add_direction(black_up_down);
+                            // If we already pointed down connect the whole
+                            // group and make the lowest stone point down
                             if (left & BLACK_DOWN)
-                                result._join_down(stone_mask, result.test_vertex(index_mask));
+                                result.join_down(stone_mask, result.test_vertex(topology_mask));
                             left = BLACK_UP_DOWN;
                         }
                     } else {
+                        // Stone above did not have a DOWN flag. So add it
                         // up |= BLACK_DOWN
                         result.add_direction(up_mask);
                         if (left & BLACK_UP) {
-                            result._join_up(stone_mask, result.test_vertex(index_mask));
+                            // If we already pointed up make the new group do so
+                            result.join_up(stone_mask, result.test_vertex(topology_mask));
                         } else {
+                            // Otherwise simple join to the stone above
                             left |= BLACK_UP;
                             result.add_direction(black_up);
                         }
                     }
                 } else {
+                    // There was not stone above, so EMPTY, LIBERTY or edge
+                    // We made sure up_mask is 0 if pos is too small (edge)
                     auto up = entry.test_vertex(up_mask);
                     if (up) {
-                        // We made sure up is 0 if pos is too small
+                        // EMPTY
                         // up = LIBERTY
                         result.set_liberty(up_mask);
                         result.liberties_add(1);
@@ -3114,14 +3157,14 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
                         } else {
                             result.add_direction(black_up_down);
                             if (left & BLACK_UP)
-                                result._join_up(stone_mask, result.test_vertex(index_mask));
+                                result.join_up(stone_mask, result.test_vertex(topology_mask));
                             // left = BLACK_UP_DOWN;
                         }
                     } else {
                         // down |= BLACK_UP
                         result.add_direction(down_mask);
                         if (left & BLACK_DOWN) {
-                            result._join_down(stone_mask, result.test_vertex(index_mask));
+                            result.join_down(stone_mask, result.test_vertex(topology_mask));
                         } else {
                             // left |= BLACK_DOWN;
                             result.add_direction(black_down);
@@ -3141,18 +3184,18 @@ void CountLiberties::_process(bool inject, Direction direction, Args args,
                 }
             }
 
-            if (direction == 0 && !inject && !left_black && nogain == 0)
+            if (direction == 0 && !inject && nogain == 0)
                 continue;
 
-            if (sym1) sym_compress(result, args.index1, args.rindex1);
+            if (sym1) sym_compress(result, args.stones1, args.rstones1);
 
             result.record1(args.record);
 
             if (DEBUG_FLOW) {
                 std::cout << "         Black: '" <<
-                    column_string(result, sym1 ? args.rindex1 : args.index1) <<
+                    column_string(result, sym1 ? args.rstones1 : args.stones1) <<
                     "' -> " << result.liberties(offset_) << " (" <<
-                    result.history_bitstring() << ") set=" << (sym1 ? args.rindex1 : args.index1) << "\n";
+                    result.history_bitstring() << ") set=" << (sym1 ? args.rstones1 : args.stones1) << "\n";
             }
             insert(thread_data, args.map1, result);
         }
@@ -3175,7 +3218,7 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
     args.record  = thread_data.record;
     args.old_min = old_min_;
     args.pos     = pos;
-    args.index0  = undef_stones();
+    args.stones0 = undef_stones();
 
     while (true) {
         int i = threads_.get_work();
@@ -3183,15 +3226,18 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
         Stones j = indices_[i];
 
         // std::cout << "call_down\n";
-        args.index0  = j;
-        args.index1  = j | bits;
-        args.rindex0 = j;
-        args.rindex1 = j | bits;
+        args.stones0  = j;
+        args.stones1  = j | bits;
+        // We won't do a reverse, so it doesn't matter what we put in rstones
+        // Just avoid uninitialized warnings
+        args.rstones0 = j;
+        args.rstones1 = j | bits;
 
-        size_t grow = class_entries(j).size() + class_entries(j | bits).size();
+        size_t grow = nr_entries(j) + nr_entries(j | bits);
         map_reserve(map0, grow);
         map_reserve(map1, grow);
 
+        // Actually do the bump
         process_down(args, thread_data);
 
         // If neighbour the given position is a guaranteed LIBERTY
@@ -3200,7 +3246,7 @@ void CountLiberties::call_down(int pos, ThreadData& thread_data) {
         entry_transfer(thread_data, map0, j,        pos, neighbour, false);
         entry_transfer(thread_data, map1, j | bits, pos, false,     false);
     }
-    if (args.index0 == no_stones() && classes_[nr_classes()].size())
+    if (args.stones0 == no_stones() && classes_[nr_classes()].size())
         inject(1, args, thread_data, bits, false);
     // std::cout << "end" << std::endl;
 }
@@ -3218,7 +3264,7 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
     args.record  = thread_data.record;
     args.old_min = old_min_;
     args.pos     = pos;
-    args.index0  = undef_stones();
+    args.stones0 = undef_stones();
 
     while (true) {
         int i = threads_.get_work();
@@ -3232,15 +3278,15 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
         // in the j != rj case we would have to worry about reversing
         // However sym_final is only ever called from a symmetrized position
         // so the extra case simply does not happen. The assert checks this
-        assert(j == rj || class_entries(rj).size() == 0);
-        assert(j == rj || class_entries(rj+bits).size() == 0);
+        assert(j == rj || nr_entries(rj) == 0);
+        assert(j == rj || nr_entries(rj | bits) == 0);
 
-        args.index0  = j;
-        args.index1  = j  | bits;
-        args.rindex0 = rj;
-        args.rindex1 = rj | bits;
+        args.stones0  = j;
+        args.stones1  = j  | bits;
+        args.rstones0 = rj;
+        args.rstones1 = rj | bits;
 
-        size_t grow = class_entries(j).size() + class_entries(j | bits).size();
+        size_t grow = nr_entries(j) + nr_entries(j | bits);
         map_reserve(map0, grow);
         map_reserve(map1, grow);
 
@@ -3253,16 +3299,16 @@ void CountLiberties::call_sym_final(int pos, ThreadData& thread_data) {
         // rj and rj + bits are already empty (for j != rj) so no clear needed
         // if (j != rj) {
         //     entry_clear(rj);
-        //     entry_clear(rj+bits);
+        //     entry_clear(rj|bits);
         // }
     }
-    if (args.index0 == no_stones() && classes_[nr_classes()].size())
+    if (args.stones0 == no_stones() && classes_[nr_classes()].size())
         inject(0, args, thread_data, bits, false);
     // std::cout << "end" << std::endl;
 }
 
 ALWAYS_INLINE
-void CountLiberties::_call_asym(Direction direction, int pos,
+void CountLiberties::_call_asym(int direction, int pos,
                                 ThreadData& thread_data) {
     Stones  bits = one_stone(pos);
     Stones rbits = one_stone(height() - 1 - pos);
@@ -3279,7 +3325,7 @@ void CountLiberties::_call_asym(Direction direction, int pos,
     args.record  = thread_data.record;
     args.old_min = old_min_;
     args.pos     = pos;
-    args.index0  = undef_stones();
+    args.stones0 = undef_stones();
 
     while (true) {
         int i = threads_.get_work();
@@ -3290,17 +3336,17 @@ void CountLiberties::_call_asym(Direction direction, int pos,
         if (j == rj) {
             // std::cout << "call_asym j==rj, direction=" << direction << "\n";
 
-            size_t grow1 = class_entries(j).size() + class_entries(j | bits).size();
-            size_t grow2 = class_entries(j | rbits).size() + class_entries(j | cbits).size();
+            size_t grow1 = nr_entries(j) + nr_entries(j | bits);
+            size_t grow2 = nr_entries(j | rbits) + nr_entries(j | cbits);
             map_reserve(map1, grow1 + grow2);
             map_reserve(map0, grow1);
 
-            args.map0    = map0;
-            args.map1    = map1;
-            args.index0  =  j;
-            args.index1  =  j | bits;
-            args.rindex0 = rj;
-            args.rindex1 = rj |rbits;
+            args.map0     = map0;
+            args.map1     = map1;
+            args.stones0  =  j;
+            args.stones1  =  j |  bits;
+            args.rstones0 = rj;
+            args.rstones1 = rj | rbits;
 
             process_asym(direction, args, thread_data);
 
@@ -3309,12 +3355,12 @@ void CountLiberties::_call_asym(Direction direction, int pos,
 
             map_reserve(map0, grow2);
 
-            args.map0    = map1;
-            args.map1    = map0;
-            args.index0  =  j | rbits;
-            args.index1  =  j | cbits;
-            args.rindex0 = rj | bits;
-            args.rindex1 = rj | cbits;
+            args.map0     = map1;
+            args.map1     = map0;
+            args.stones0  =  j | rbits;
+            args.stones1  =  j | cbits;
+            args.rstones0 = rj | bits;
+            args.rstones1 = rj | cbits;
             process_asym(direction, args, thread_data);
 
             // The j + bits map can never get filled since rj + bits is smaller
@@ -3326,35 +3372,35 @@ void CountLiberties::_call_asym(Direction direction, int pos,
             // These two can never have gotten filled during the previous
             // call_down round (call_down only changes bits at the top half
             // of a column, that is the low bits)
-            assert(class_entries(rj | bits ).size() == 0);
-            assert(class_entries(rj | cbits).size() == 0);
+            assert(nr_entries(rj | bits ) == 0);
+            assert(nr_entries(rj | cbits) == 0);
 
             // One of j|bits and rj|rbits will be unused
-            // size_t grow3 = class_entries(rj|rbits).size() + class_entries(rj|cbits).size();
-            size_t grow3 = class_entries(rj | rbits).size();
-            size_t grow4 = class_entries( j | rbits).size() + class_entries(j | cbits).size();
-            // size_t grow2 = class_entries(rj).size() + class_entries(rj|bits).size();
-            size_t grow2 = class_entries(rj).size();
+            // size_t grow3 = nr_entries(rj|rbits) + nr_entries(rj|cbits);
+            size_t grow3 = nr_entries(rj | rbits);
+            size_t grow4 = nr_entries( j | rbits) + nr_entries(j | cbits);
+            // size_t grow2 = nr_entries(rj) + nr_entries(rj|bits);
+            size_t grow2 = nr_entries(rj);
             map_reserve(map1, grow2+grow4);
-            size_t grow1 = class_entries(j).size() + class_entries(j|bits).size();
+            size_t grow1 = nr_entries(j) + nr_entries(j|bits);
             map_reserve(map2, grow1+grow3);
             map_reserve(map0, grow1+grow2);
 
-            args.map0    = map0;
-            args.map1    = map2;
-            args.index0  =  j;
-            args.index1  =  j | bits;
-            args.rindex0 = rj;
-            args.rindex1 = rj | rbits;
+            args.map0     = map0;
+            args.map1     = map2;
+            args.stones0  =  j;
+            args.stones1  =  j | bits;
+            args.rstones0 = rj;
+            args.rstones1 = rj | rbits;
             process_asym(direction, args, thread_data);
 
             if (grow2) {
-                args.map0    = map0;
-                args.map1    = map1;
-                args.index0  = rj;
-                args.index1  = rj | bits;
-                args.rindex0 =  j;
-                args.rindex1 =  j | rbits;
+                args.map0     = map0;
+                args.map1     = map1;
+                args.stones0  = rj;
+                args.stones1  = rj | bits;
+                args.rstones0 =  j;
+                args.rstones1 =  j | rbits;
                 process_asym(direction, args, thread_data);
             }
 
@@ -3370,10 +3416,10 @@ void CountLiberties::_call_asym(Direction direction, int pos,
             if (grow3) {
                 args.map0    = map2;
                 args.map1    = map0;
-                args.index0  = rj | rbits;
-                args.index1  = rj | cbits;
-                args.rindex0 =  j |  bits;
-                args.rindex1 =  j | cbits;
+                args.stones0  = rj | rbits;
+                args.stones1  = rj | cbits;
+                args.rstones0 =  j |  bits;
+                args.rstones1 =  j | cbits;
                 process_asym(direction, args, thread_data);
             }
 
@@ -3386,12 +3432,12 @@ void CountLiberties::_call_asym(Direction direction, int pos,
                 entry_transfer(thread_data, map2, rj | rbits, pos,  down_neighbour & direction, false);
             }
 
-            args.map0    = map1;
-            args.map1    = map0;
-            args.index0  =  j | rbits;
-            args.index1  =  j | cbits;
-            args.rindex0 = rj |  bits;
-            args.rindex1 = rj | cbits;
+            args.map0     = map1;
+            args.map1     = map0;
+            args.stones0  =  j | rbits;
+            args.stones1  =  j | cbits;
+            args.rstones0 = rj |  bits;
+            args.rstones1 = rj | cbits;
             process_asym(direction, args, thread_data);
 
             entry_transfer(thread_data,  map1, j | rbits,      pos,  up_neighbour & direction, false);
@@ -3402,13 +3448,13 @@ void CountLiberties::_call_asym(Direction direction, int pos,
         }
         entry_transfer(thread_data, map0, j|cbits, pos, false, false);
     }
-    if (args.index0 == rbits && classes_[nr_classes()].size()) {
-        args.map0    = map0;
-        args.map1    = map1;
-        args.index0  = no_stones();
-        args.index1  = bits;
-        args.rindex0 = no_stones();
-        args.rindex1 = rbits;
+    if (args.stones0 == rbits && classes_[nr_classes()].size()) {
+        args.map0     = map0;
+        args.map1     = map1;
+        args.stones0  = no_stones();
+        args.stones1  = bits;
+        args.rstones0 = no_stones();
+        args.rstones1 = rbits;
 
         inject(direction, args, thread_data, rbits, bits.index() & direction);
     }
@@ -3433,29 +3479,33 @@ void CountLiberties::reserve_thread_maps(size_t max) {
         // Set all bits after the first one
         max_map_ = (static_cast<size_t>(0) - 1) >> clz(max_map_);
         ++max_map_;
+        // Now max_map_ is a power of 2
 
-        max_backbone_ = max * backbone_load_multiplier_;
+        max_topology_ = max * topology_load_multiplier_;
         // We must have at least 1 empty to prevent find() from looping
-        if (max_backbone_ < max) max_backbone_ = max;
-        assert(max_backbone_ > 0);
+        if (max_topology_ < max) max_topology_ = max;
+        assert(max_topology_ > 0);
         // Set all bits after the first one
-        max_backbone_ = (static_cast<size_t>(0) - 1) >> clz(max_backbone_);
-        ++max_backbone_;
+        max_topology_ = (static_cast<size_t>(0) - 1) >> clz(max_topology_);
+        ++max_topology_;
+        // Now max_topology_ is a power of 2
         ++max;
     } else {
         max_map_      = 0;
-        max_backbone_ = 0;
+        max_topology_ = 0;
     }
+    // +1 for the TERMINATOR
     size_t size_map = ((max_map_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
-    size_t size_backbone = ((max_backbone_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
-    size_t needed = (3*size_map + size_backbone) * threads_.nr_threads();
-    // std::cout << "max=" << max << " (3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
+    // +1 for the TERMINATOR
+    size_t size_topology = ((max_topology_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
+    size_t needed = (3*size_map + size_topology) * threads_.nr_threads();
+    // std::cout << "max=" << max << " (3*" << size_map << " + " << size_topology << ") * " << threads_.nr_threads() << " = " << needed << "\n";
 
     // Check if the currently assigned areas are big enough
     if (max_map_      <= threads_arena_map_ &&
-        max_backbone_ <= threads_arena_backbone_) return;
+        max_topology_ <= threads_arena_topology_) return;
 
-    // std::cout << "max_map_=" << max_map_ << ",max_backbone_=" << max_backbone_ << "\n";
+    // std::cout << "max_map_=" << max_map_ << ",max_topology_=" << max_topology_ << "\n";
     if (needed > threads_arena_allocated_) {
         if (ARENA_MALLOC) {
             free(threads_arena_);
@@ -3465,15 +3515,15 @@ void CountLiberties::reserve_thread_maps(size_t max) {
         if (false) {
             // Go a factor 2 over to avoid many small increases
             max_map_      *= 2;
-            max_backbone_ *= 2;
+            max_topology_ *= 2;
             size_t size_map = ((max_map_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
-            size_t size_backbone = ((max_backbone_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
-            needed = (3*size_map + size_backbone) * threads_.nr_threads();
+            size_t size_topology = ((max_topology_+1) * sizeof(EntrySet::value_type) + _CACHE_LINE -1) / _CACHE_LINE * _CACHE_LINE;
+            needed = (3*size_map + size_topology) * threads_.nr_threads();
         }
         struct alignas(_CACHE_LINE) Dummy {
             EntrySet::value_type dummy[_CACHE_LINE / sizeof(EntrySet::value_type)];
         };
-        // std::cout << "(3*" << size_map << " + " << size_backbone << ") * " << threads_.nr_threads() << " = " << needed << "\n";
+        // std::cout << "(3*" << size_map << " + " << size_topology << ") * " << threads_.nr_threads() << " = " << needed << "\n";
         if (ARENA_MALLOC) {
             threads_arena_allocated_ = (needed + ARENA_ALIGNMENT - 1) / ARENA_ALIGNMENT * ARENA_ALIGNMENT;
             threads_arena_ = reinterpret_cast<EntrySet::value_type *>(aligned_alloc(ARENA_ALIGNMENT, threads_arena_allocated_));
@@ -3488,11 +3538,11 @@ void CountLiberties::reserve_thread_maps(size_t max) {
     auto ptr = threads_arena_;
 
     for (auto& thread: threads_)
-        thread.alloc_arenas(ptr, max_map_, max_backbone_);
+        thread.alloc_arenas(ptr, max_map_, max_topology_);
     std::memset(threads_arena_, -1, (ptr - threads_arena_) * sizeof(EntrySet::value_type));
 
     threads_arena_map_      = max_map_;
-    threads_arena_backbone_ = max_backbone_;
+    threads_arena_topology_ = max_topology_;
     // std::cout << "Used " << ptr - threads_arena_  << " bytes\n";
 }
 
@@ -3521,7 +3571,7 @@ int CountLiberties::run_round(int x, int pos) {
     auto* indices0 = &indices0_[0];
 
     //for (int j=0; j<nr_classes(); ++j) {
-    //    std::cout << "From keys(" << j << ")=" << nr_keys(j) << "\n";
+    //    std::cout << "From keys(" << j << ")=" << nr_entries(j) << "\n";
     //}
 
     reversed_ = false;
@@ -3550,11 +3600,11 @@ int CountLiberties::run_round(int x, int pos) {
         for (Stones j=no_stones(); j<=limit; ++j) {
             // this j will be processed under the auspices of j & ~bits
             if (j & bits) continue;
-            auto size = nr_keys(j) + nr_keys(j | bits);
+            auto size = nr_entries(j) + nr_entries(j | bits);
             // If the class with or without bits is empty we can skip it
             if (size) {
-                sizes->index = j;
-                sizes->size  = size;
+                sizes->stones = j;
+                sizes->size   = size;
                 ++sizes;
                 if (size > max) {
                     max = size;
@@ -3566,6 +3616,8 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
+        // Stone pattern that can become a full column
+        // IF this index is in sizes then it's the last element
         limit = bits.punch_empty(nr_classes());
     } else {
         // odd, work from bottom up
@@ -3607,19 +3659,19 @@ int CountLiberties::run_round(int x, int pos) {
             // combinations of bits and rbits we will get the exact same result
             // starting from rj. To avoid duplicattion drop rj
             if (j > rj) continue;
-            size_t size = nr_keys(j) + nr_keys(j | bits);
+            size_t size = nr_entries(j) + nr_entries(j | bits);
             // Again avoid duplication if bits == rbits
             if (bits != rbits)
-                size += nr_keys(j | rbits) + nr_keys(j | cbits);
+                size += nr_entries(j | rbits) + nr_entries(j | cbits);
             // Again avoid duplication if j == rj
             if (j != rj) {
-                size += nr_keys(rj) + nr_keys(rj | bits);
+                size += nr_entries(rj) + nr_entries(rj | bits);
                 if (bits != rbits)
-                    size += nr_keys(rj | rbits) + nr_keys(rj | cbits);
+                    size += nr_entries(rj | rbits) + nr_entries(rj | cbits);
             }
             if (size) {
-                sizes->index = j;
-                sizes->size  = size;
+                sizes->stones = j;
+                sizes->size   = size;
                 ++sizes;
                 if (size > max) {
                     max = size;
@@ -3631,6 +3683,8 @@ int CountLiberties::run_round(int x, int pos) {
                 ++indices0[size];
             }
         }
+        // Stone pattern that can become a full column
+        // IF this index is in sizes then it's the last element
         limit = cbits.punch_empty(nr_classes());
     }
 
@@ -3645,8 +3699,8 @@ int CountLiberties::run_round(int x, int pos) {
     if (classes_[nr_classes()].size()) {
         if (x >= 2) classes_[nr_classes()].clear();
         else {
-            if (sizes > sizes_&& sizes_[0].index == no_stones()) {
-                // Move index 0 to the start of the sizes array
+            if (sizes > sizes_ && sizes_[0].stones == no_stones()) {
+                // Make it sort to the start of the indices array
                 if (sizes_[0].size >= max) {
                     max = sizes_[0].size + 1;
                     if (max >= indices0_.size()) {
@@ -3657,9 +3711,11 @@ int CountLiberties::run_round(int x, int pos) {
                 --indices0[sizes_[0].size];
                 sizes_[0].size = 0;
             } else {
-                // There is no index 0 yet. Create one
-                sizes->index = no_stones();
-                sizes->size  = 0;
+                // This seems always true. Why ?
+                assert(sizes == sizes_ || sizes[-1].stones != limit);
+                // There is no no_stones() entry yet. Create one
+                sizes->stones = no_stones();
+                sizes->size   = 0;
                 ++sizes;
                 // No need to resize indices0, it starts at size 100
                 if (max <= 0) max = 1;
@@ -3668,7 +3724,7 @@ int CountLiberties::run_round(int x, int pos) {
         }
     }
 
-    int ttop = sizes - &sizes_[0];
+    Stones::value_type ttop = sizes - &sizes_[0];
     if (ttop == 0) fatal("No work");
 
     if (false) {
@@ -3678,10 +3734,10 @@ int CountLiberties::run_round(int x, int pos) {
             ", bits=" << bits << ", rbits=" << rbits <<
             ", full=" << limit << ",x=" << x << "\n";
         for (auto s = &sizes_[0]; s < sizes; ++s)
-            std::cout << "    index " << s->index << ": size " << s->size << "\n";
+            std::cout << "    stones " << s->stones << ": size " << s->size << "\n";
     }
 
-    // We could tighten max_map_ and max_backbone_ by a factor of 2 or so for
+    // We could tighten max_map_ and max_topology_ by a factor of 2 or so for
     // the common case of call_asym j!=rj
     // Even though inject is already accounted for in max in the actual code
     // we always grow the maps that CAN be injected by 1, so we need a +1
@@ -3689,7 +3745,7 @@ int CountLiberties::run_round(int x, int pos) {
 
     size_t vertex = x * height() + pos+1;
     current_full_liberties_ = full_liberties_[vertex-1];
-    if (ttop && sizes[-1].index == limit) {
+    if (ttop && sizes[-1].stones == limit) {
         if (current_full_liberties_) {
             if (current_full_liberties_ > offset_ + UINT64_C(1))
                 current_full_liberties_ = current_full_liberties_ - (offset_ +1);
@@ -3749,14 +3805,15 @@ int CountLiberties::run_round(int x, int pos) {
     // sort on sizes_. However for any problem sizes we can realistically handle
     // on current computers max is pretty restricted (e.g. it is only 14814 for
     // a 19x19 board and the growth factor is still below 2).
-    ++max;
+    ++max;	// size = max index + 1
     if (max > max_size_) {
         //    std::cout << "max_max=" << max_max << std::endl;
         max_size_ = max;
     }
     // std::cout << "ttop=" << ttop << ", max=" << max << "\n";
 
-    uint accu = 0;
+    // Do counting sort
+    Stones::value_type accu = 0;
     for (EntryVector::size_type i=0; i < max; ++i) {
         auto tmp = indices0[i];
         indices0[i] = accu;
@@ -3765,7 +3822,7 @@ int CountLiberties::run_round(int x, int pos) {
 
     auto* indices  = &indices_[0];
     for (auto s = &sizes_[0]; s < sizes; ++s)
-        indices[indices0[s->size]++] = s->index;
+        indices[indices0[s->size]++] = s->stones;
     // Restore indices0 to be completely 0
     std::memset(indices0, 0, max*sizeof(indices0[0]));
 
@@ -3780,6 +3837,8 @@ int CountLiberties::run_round(int x, int pos) {
             std::cout << "    index " << indices[i] << "\n";
     }
 
+    // Do the actual work (move 1 bump).
+    // If there was nothing to do pick up the initial values from 1 thread
     uint threads = ttop ? threads_.execute(this, ttop) : 1;
 
     max_classes_ = no_stones();
@@ -3926,10 +3985,11 @@ void CountLiberties::clear() {
 
     current_full_liberties_ = 0;
 
-    Entry entry;
-    entry.clear(-offset_);
+    // Add the empty inject column at index nr_classes()
+    Entry empty_column;
+    empty_column.clear(-offset_);
     classes_[nr_classes()].reserve(1);
-    classes_[nr_classes()].emplace_back(entry);
+    classes_[nr_classes()].emplace_back(empty_column);
 
     if (INITIAL_INSERT) {
         // Initial insert. Conceptually not needed since inject() will put
@@ -3939,7 +3999,7 @@ void CountLiberties::clear() {
         threads_[0].new_max  = new_max_;
         threads_[0].real_max = 0;
         auto map0 = &threads_[0][0];
-        insert(threads_[0], map0, entry);
+        insert(threads_[0], map0, empty_column);
         new_min_    = threads_[0].new_min;
         new_max_    = threads_[0].new_max;
         max_stones_ = threads_[0].max_stones;
@@ -3972,7 +4032,7 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
     threads_{nr_threads, save_thread},
     max_classes_{no_stones()},
     map_load_multiplier_{1. / MAP_LOAD_FACTOR},
-    backbone_load_multiplier_{1. / BACKBONE_LOAD_FACTOR}
+    topology_load_multiplier_{1. / TOPOLOGY_LOAD_FACTOR}
 {
 
     // std::cout << "height=" << height_ << "\n";
@@ -3985,13 +4045,13 @@ CountLiberties::CountLiberties(int height, uint nr_threads, bool save_thread) :
             ("Height " + std::to_string(height) + " is below 0");
 
     reverse_bits_ = new Stones[nr_classes()];
-    index_masks_  = new CompressedColumn::Mask[nr_classes()];
+    topology_masks_  = new CompressedColumn::Mask[nr_classes()];
     for (Stones::value_type i = 0; i < nr_classes(); ++i) {
         reverse_bits_[i] = Stones{i}.reverse(height_);
-        index_masks_[i]  = CompressedColumn::Mask::backbone_mask(i);
+        topology_masks_[i]  = CompressedColumn::Mask::topology_mask(i);
     }
     target_width(height_);
-    full_entry_ = Entry::full(index_masks_[nr_classes()-1]);
+    full_entry_ = Entry::full(topology_masks_[nr_classes()-1]);
 
     entry00_.reserve(1);
     // One extra to hold the empty column injector
@@ -4016,7 +4076,7 @@ CountLiberties::~CountLiberties() {
         delete[] threads_arena_;
     delete[] indices_;
     delete[] sizes_;
-    delete[] index_masks_;
+    delete[] topology_masks_;
     delete[] reverse_bits_;
 }
 
@@ -4190,18 +4250,18 @@ unsigned int
 CountLiberties::nr_classes_non_empty()
 
 UV
-CountLiberties::nr_keys()
+CountLiberties::nr_entries()
 
 UV
-CountLiberties::nr_keys_min()
+CountLiberties::nr_entries_min()
 
 UV
-CountLiberties::nr_keys_max()
+CountLiberties::nr_entries_max()
 
 void
 CountLiberties::keys()
   PPCODE:
-    uint nr = THIS->nr_keys();
+    uint nr = THIS->nr_entries();
     if (GIMME_V == G_ARRAY) {
         uint height = THIS->height();
         EXTEND(SP, nr);
@@ -4226,7 +4286,7 @@ void
 CountLiberties::values()
   PPCODE:
     try {
-        uint nr = THIS->nr_keys();
+        uint nr = THIS->nr_entries();
         if (GIMME_V == G_ARRAY) {
             uint offset = THIS->_offset();
             EXTEND(SP, nr);
@@ -4250,7 +4310,7 @@ void
 CountLiberties::entries(bool extended = 0)
   PPCODE:
     try {
-        uint nr = THIS->nr_keys();
+        uint nr = THIS->nr_entries();
         if (GIMME_V == G_ARRAY) {
             uint height = THIS->height();
             uint offset = THIS->_offset();
@@ -4300,7 +4360,7 @@ void
 CountLiberties::key_values()
   PPCODE:
     try {
-        uint nr = THIS->nr_keys();
+        uint nr = THIS->nr_entries();
         if (GIMME_V == G_ARRAY) {
             uint height = THIS->height();
             uint offset = THIS->_offset();
@@ -4711,7 +4771,7 @@ void
 CountLiberties::map_load_factor(float factor)
 
 void
-CountLiberties::backbone_load_factor(float factor)
+CountLiberties::topology_load_factor(float factor)
 
 void
 revision_system(...)

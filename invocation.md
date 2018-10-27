@@ -8,7 +8,7 @@ count\_liberties - Calculate the maximum number of liberties one group on a go b
     count_liberties [--solution] [--quiet] [[<min_n>] <maxn>]
     count_liberties [--save_thread] [-t <threads>] [--threads <threads>] <other_options>
     count_liberties [--tcmalloc] [--jemalloc] [--llmalloc] [--libcmalloc] [--hugepages [mount_point]] <other_options>
-    count_liberties [map_load_factor <float>] [backbone_load_factor <float>]  <other_options>
+    count_liberties [map_load_factor <float>] [topology_load_factor <float>]  <other_options>
     count_liberties [--generalize] <other_options>
     count_liberties [--html <file>] <other_options>
     count_liberties [--stats] [--dump] <other_options>
@@ -82,7 +82,7 @@ If no arguments are given it runs for all board heights from 1 to the maximum su
 
     The load at which an internal datastructure resizes
 
-- --backbone\_load\_factor &lt;float>
+- --topology\_load\_factor &lt;float>
 
     The load at which an internal datastructure resizes
 

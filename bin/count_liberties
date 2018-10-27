@@ -138,7 +138,7 @@ die "Could not parse your command line. Try $0 -h\n" unless
                "sizes!"		=> \my $show_sizes,
                "solution!"	=> \my $solution,
                "map_load_factor=f"	=> \my $map_load_factor,
-               "backbone_load_factor=f"	=> \my $backbone_load_factor,
+               "topology_load_factor=f"	=> \my $topology_load_factor,
                "generalize!"	=> \$generalize,
                "html=s"		=> \my $html,
                "dump!"		=> \my $dump,
@@ -163,6 +163,15 @@ if ($help) {
     exit system("perldoc", "-F", "$Bin/$Script") ? 1 : 0;
     # make parser happy
     %Config::Config = ();
+}
+
+if (defined $map_load_factor) {
+    die "map_load_factor must be in ]0, 1[\n" if
+        $map_load_factor <= 0 || $map_load_factor >= 1;
+}
+if (defined $topology_load_factor) {
+    die "topology_load_factor must be in ]0, 1[\n" if
+        $topology_load_factor <= 0 || $topology_load_factor >= 1;
 }
 
 if ($restart) {
@@ -377,8 +386,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
     my $counter = Go::CountLiberties->new($height, $nr_threads, $save_thread);
     $counter->map_load_factor($map_load_factor) if
         defined $map_load_factor;
-    $counter->backbone_load_factor($backbone_load_factor) if
-        defined $backbone_load_factor;
+    $counter->topology_load_factor($topology_load_factor) if
+        defined $topology_load_factor;
 
     my $total_start      = time;
     my $total_user_start = times;
@@ -388,7 +397,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
     my @generalized;
     my (@max, %signatures, @best_column);
 
-    my @nr_keys_first =
+    my @nr_entries_first =
         $height < 2 ? (1) x ($height * $height) :
         ((0) x $height, (1) x ($height * ($height-2)), (0) x $height);
 
@@ -421,7 +430,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         if ($solution) {
             if ($cost_type) {
                 for my $i (0..$target_width*$height-1) {
-                    $counter->cost($i, $nr_keys_first[$i]);
+                    $counter->cost($i, $nr_entries_first[$i]);
                 }
             }
             for my $f (@{$best_filter[-1]}) {
@@ -463,7 +472,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
             my $start      = time;
             my $user_start = times;
             my $x = 0;
-            my (@nr_keys, @times);
+            my (@nr_entries, @times);
             # Do a board sweep
             if ($fh_html) {
                 print $fh_html "
@@ -496,7 +505,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                         $run_time = times() - $run_time;
                         push @times, $run_time < 0 ? 0 : $run_time;
                     }
-                    push @nr_keys,$counter->nr_keys if $solution || $show_stats;
+                    push @nr_entries, $counter->nr_entries if $solution || $show_stats;
                     # print "[$x, $y] ", Dumper($counter->signature, { $counter->key_values});
                     print "[$x, $y] ", Dumper({ $counter->key_values}) if $dump;
                     if ($show_stats) {
@@ -505,12 +514,12 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                         my $max_real_max = $counter->max_real_max;
                         my $offset   = $counter->_offset;
                         my $max = $counter->maximum;
-                        # nr_keys_min is not very interesting, always in [1,4]
+                        # nr_entries_min is not very interesting, always in [1,4]
                         # (but once filtering we zoom in on a particular index
                         # and the minimum can grow to the maximum)
-                        # my $nr_keys_min = $counter->nr_keys_min;
-                        my $nr_keys_max = $counter->nr_keys_max;
-                        my $nr_keys = $nr_keys[-1];
+                        # my $nr_entries_min = $counter->nr_entries_min;
+                        my $nr_entries_max = $counter->nr_entries_max;
+                        my $nr_entries = $nr_entries[-1];
                         my $nr_classes = $counter->nr_classes_non_empty;
                         printf("%sRange [%2d, %2d, %2d, %2d],%10d keys in %7d classes [%4.0f,%7d]\n",
                                $x > $target_width ? "" :
@@ -518,8 +527,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                                            $counter->filter($x-1, $y-1) == 0 ? " " : $counter->filter($x-1, $y-1) < 0 ? "0" : "1",
                                            $counter->record_map($x-1, $y-1) == -1 ? "  " : sprintf("%2d", $counter->record_map($x-1, $y-1))),
                                $real_min, $max - $offset, $real_max,
-                               $max_real_max, $nr_keys, $nr_classes,
-                               $nr_keys/$nr_classes, $nr_keys_max);
+                               $max_real_max, $nr_entries, $nr_classes,
+                               $nr_entries/$nr_classes, $nr_entries_max);
                     }
                 }
 
@@ -534,12 +543,12 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                 if ($solution) {
                     if ($x == $target_width) {
                         if ($cost_type > 0) {
-                            @nr_keys_first = @nr_keys if $sweep == 0;
-                            for my $pos (0..$#nr_keys) {
-                                $counter->cost($pos, $nr_keys[$pos]);
+                            @nr_entries_first = @nr_entries if $sweep == 0;
+                            for my $pos (0..$#nr_entries) {
+                                $counter->cost($pos, $nr_entries[$pos]);
                             }
                         } else {
-                            @nr_keys_first = @times if $sweep == 0;
+                            @nr_entries_first = @times if $sweep == 0;
                             for my $pos (0..$#times) {
                                 $counter->cost($pos, $times[$pos]);
                             }
@@ -585,17 +594,17 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                 my $period = time - $sub_start;
                 my $user_period = times - $user_sub_start;
                 my $mem = $counter->get_memory;
-                my $nr_keys = @nr_keys ? $nr_keys[-1] : $counter->nr_keys;
+                my $nr_entries = @nr_entries ? $nr_entries[-1] : $counter->nr_entries;
                 printf(" width %2d:%4d (%6.1f s,%10d columns, %016X sig,%9d KiB)\n",
-                       $x, $counter->maximum, $period, $nr_keys,
+                       $x, $counter->maximum, $period, $nr_entries,
                        $signature, $mem/1024) if !$quiet;
                 if ($fh_html) {
                     printf($fh_html "
       <tr><td>%d</td><td>%d</td><td>%.1f</td><td>%d</td><td class='signature'>%016X</td><td>%d</td></tr>",
-                       $x, $counter->maximum, $period, $nr_keys, $signature, $mem/1024);
+                       $x, $counter->maximum, $period, $nr_entries, $signature, $mem/1024);
                 }
                 if ($sweep == 0 && !$generalized) {
-                    $signature .= " " . $nr_keys;
+                    $signature .= " " . $nr_entries;
                     if (my $x0 = $signatures{$signature}) {
                         my $period = $x - $x0;
                         my @period = map "+" . ($max[$_] - $max[$_-1]), $x0..$x-1;
@@ -673,7 +682,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
         }
         # print Dumper $filter[0];
 
-        $counter->nr_keys == 1 || die "Initial nr_keys should be 1";
+        $counter->nr_entries == 1 || die "Initial nr_entries should be 1";
         my $old_column;
         # my ($column) = $counter->keys;
         my $reversed = 0;
@@ -693,8 +702,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                 # print "pos=$y0 $column $reversed $counter->filter($x-1, $y-1)\n";
                 # print "[$x, $y] ", Dumper({ $counter->key_values}) if $target_width == 1;
                 # print Dumper({ $counter->key_values}) if $dump;
-                my $nr_keys = $counter->nr_keys;
-                $nr_keys == 1 || die "nr_keys at [$x,$y] should be 1, not $nr_keys";
+                my $nr_entries = $counter->nr_entries;
+                $nr_entries == 1 || die "nr_entries at [$x,$y] should be 1, not $nr_entries";
                 # ($column) = $counter->keys;
             }
             if ($x != $target_width && !$counter->no_solution && $counter->maximum == $max[$x-1] && $best_filter[$x-1]) {
@@ -776,7 +785,7 @@ count_liberties - Calculate the maximum number of liberties one group on a go bo
   count_liberties [--solution] [--quiet] [[<min_n>] <maxn>]
   count_liberties [--save_thread] [-t <threads>] [--threads <threads>] <other_options>
   count_liberties [--tcmalloc] [--jemalloc] [--llmalloc] [--libcmalloc] [--hugepages [mount_point]] <other_options>
-  count_liberties [map_load_factor <float>] [backbone_load_factor <float>]  <other_options>
+  count_liberties [map_load_factor <float>] [topology_load_factor <float>]  <other_options>
   count_liberties [--generalize] <other_options>
   count_liberties [--html <file>] <other_options>
   count_liberties [--stats] [--dump] <other_options>
@@ -852,7 +861,7 @@ This option implies L<--tcmalloc|/tcmalloc>
 
 The load at which an internal datastructure resizes
 
-=item X<backbone_load_factor>--backbone_load_factor <float>
+=item X<topology_load_factor>--topology_load_factor <float>
 
 The load at which an internal datastructure resizes
 
