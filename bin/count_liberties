@@ -6,6 +6,9 @@ our $VERSION = "1.001";
 
 # based on the border state idea in http://homepages.cwi.nl/~tromp/go/gostate.ps
 
+# This script has become a nightmare and is in bad need of a rewrite
+# (it started as such a simple perl driver and then all these features happened)
+
 # If the program runs as /foobar/bin/program, find libraries in /foobar/lib
 use FindBin qw($Bin $Script);
 BEGIN {
@@ -35,6 +38,8 @@ use constant {
     EDGE	=> "*",
     WHITE	=> "O",
     EMPTY	=> ".",
+
+    TERMINATOR	=> "\xff" x 8 . "\n-----\n",
 };
 
 my $generalize	= 1;
@@ -136,6 +141,7 @@ die "Could not parse your command line. Try $0 -h\n" unless
                "save_thread!"	=> \my $save_thread,
                "stats!"		=> \my $show_stats,
                "sizes!"		=> \my $show_sizes,
+               "paranoid=s"	=> \my $paranoid_file,
                "solution!"	=> \my $solution,
                "map_load_factor=f"	=> \my $map_load_factor,
                "topology_load_factor=f"	=> \my $topology_load_factor,
@@ -304,6 +310,12 @@ my $compiled_history_bits = Go::CountLiberties->history_bits ||
 $history_bits = $compiled_history_bits if !defined $history_bits;
 $history_bits > 0 || die "history_bits must be > 0";
 $history_bits <= $compiled_history_bits || die "history_bits must be <= the compiled in value of $compiled_history_bits";
+die "Paranoia must generalize" if $paranoid_file && !$generalize;
+my $paranoid_mode = ":raw";
+if ($paranoid_file =~ /\.gz\z/) {
+    require PerlIO::gzip;
+    $paranoid_mode = ":gzip";
+}
 
 $| = 1;
 
@@ -394,8 +406,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
 
     my $sweep = 0;
     my $generalized = !$generalize;
-    my @generalized;
-    my (@max, %signatures, @best_column);
+    my $paranoid = $paranoid_file;
+    my (@generalized, @max, %signatures, @best_column, $paranoid_signature);
 
     my @nr_entries_first =
         $height < 2 ? (1) x ($height * $height) :
@@ -451,7 +463,7 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
             }
         }
 
-        while ($solution || $sweep == 0) {
+        while ($solution || $sweep == 0 || $paranoid_signature) {
             if ($solution) {
                 if ($cost_type) {
                     $counter->record_by_cost();
@@ -603,9 +615,51 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
       <tr><td>%d</td><td>%d</td><td>%.1f</td><td>%d</td><td class='signature'>%016X</td><td>%d</td></tr>",
                        $x, $counter->maximum, $period, $nr_entries, $signature, $mem/1024);
                 }
-                if ($sweep == 0 && !$generalized) {
+                if ($paranoid_signature && $paranoid_signature == $signature) {
+                    $paranoid_signature = 0;
+                    open(my $fh, "<$paranoid_mode", $paranoid_file) ||
+                        die "Could not open '$paranoid_file': $!";
+                    for my $class (0..$counter->nr_classes()-1) {
+                        $counter->valid_class($class) || next;
+                        my $nr_entries = $counter->nr_entries($class);
+                        local $/ = \4;
+                        defined(my $nr = <$fh>) ||
+                            die "Unexpected end of file '$paranoid_file'";
+                        length($nr) == 4 ||
+                            die "Unexpected end of file '$paranoid_file'";
+                        $nr = unpack("V", $nr);
+                        $nr == $nr_entries || die "Unexpected set failure";
+                        my $nr_bits = $nr_entries * $counter->height() * 2;
+                        my $nr_bytes = int(($nr_bits+7)/8);
+                        my $bytes = $counter->raw_class_bits($class);
+                        my $b;
+                        if ($nr_bytes) {
+                            local $/ = \$nr_bytes;
+                            defined($b = <$fh>) ||
+                                die "Unexpected end of file '$paranoid_file'";
+                            length($b) == $nr_bytes ||
+                                die "Unexpected end of file '$paranoid_file'";
+                        } else {
+                            $b = "";
+                        }
+                        $b eq $bytes || die "Unexpected set failure";
+                    }
+                    local $/ = \length(TERMINATOR);
+                    defined(my $terminator = <$fh>) ||
+                        die "Unexpected end of file '$paranoid_file'";
+                    length($terminator) == length(TERMINATOR) ||
+                        die "Unexpected end of file '$paranoid_file'";
+                    $terminator eq TERMINATOR || die "Unexpected set failure";
+                    local $/ = 1;
+                    $terminator = <$fh>;
+                    !defined($terminator) ||
+                        die "Unexpected trailing bytes in '$paranoid_file'";
+                    close($fh) || die "Error closing '$paranoid_file': $!";
+                    print "  General rule has been verified with a complete set compare\n";
+                }
+                if ($sweep == 0 && (!$generalized || $paranoid_signature)) {
                     $signature .= " " . $nr_entries;
-                    if (my $x0 = $signatures{$signature}) {
+                    if (!$paranoid_signature and my $x0 = $signatures{$signature}) {
                         my $period = $x - $x0;
                         my @period = map "+" . ($max[$_] - $max[$_-1]), $x0..$x-1;
 
@@ -637,7 +691,28 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                                $time_period);
                         @generalized = ($x0, $max[$x0-1], \@period);
                         $generalized = 1;
-                        $solution && $x < $target_width || last;
+                        if ($paranoid) {
+                            open(my $fh, ">$paranoid_mode", $paranoid_file) ||
+                                die "Could not open '$paranoid_file': $!";
+                            for my $class (0..$counter->nr_classes()-1) {
+                                $counter->valid_class($class) || next;
+                                print($fh pack("V", $counter->nr_entries($class))) ||
+                                    die "Error writing to '$paranoid_file': $!";
+                                print($fh $counter->raw_class_bits($class)) ||
+                                    die "Error writing to '$paranoid_file': $!";
+                            }
+                            print($fh TERMINATOR) ||
+                                die "Error writing to '$paranoid_file': $!";
+                            close($fh) ||
+                                die "Error closing '$paranoid_file': $!";
+                            $paranoid = undef;
+                            $paranoid_signature = $signature;
+                            $paranoid_signature =~ s/ .*//;
+                            $paranoid_signature ||
+                                die "Zero signature. What are the odds ?";
+                            printf "  General rule paranoid verification started\n";
+                        }
+                        $solution && $x < $target_width || $paranoid_signature || last;
                     } else {
                         $signatures{$signature} = $x;
                     }
@@ -786,7 +861,7 @@ count_liberties - Calculate the maximum number of liberties one group on a go bo
   count_liberties [--save_thread] [-t <threads>] [--threads <threads>] <other_options>
   count_liberties [--tcmalloc] [--jemalloc] [--llmalloc] [--libcmalloc] [--hugepages [mount_point]] <other_options>
   count_liberties [map_load_factor <float>] [topology_load_factor <float>]  <other_options>
-  count_liberties [--generalize] <other_options>
+  count_liberties [--generalize] [--paranoid <file>] <other_options>
   count_liberties [--html <file>] <other_options>
   count_liberties [--stats] [--dump] <other_options>
   count_liberties [--sizes] [--debug_max_size] [--debug_history] <other_options>
@@ -867,7 +942,17 @@ The load at which an internal datastructure resizes
 
 =item X<generalize>--generalize
 
-Once all possibilities for a column repeat the program knows it has found the general ruie for any board width and the pattern will repeat from the first occurance of a column. But even before that column it can happen that the rule turns out to be still valid even if the possibilities for an earlier column where not the same. If this option is true (the default) the rule is presented as starting on the earliest such column.
+Determine the general rule. This means the program keeps widening the board until the exact same column topology set repeats. Since each column topology set is follows exactly from the previous one this means from now on the columns keep repeating with a fixed growth pattern of the liberties.
+
+By default the column sets are only compared using their hash signature. In principle this could give a false positive. While this is insanely unlikely (the chance your computer makes a mistake is higher), you can force a complete set compare by giving the L<paranoia option|/paranoia>.
+
+=item X<paranoid>--paranoia <file>
+
+If this option is given (while L<generalize"/generalize> is true) the column set is written to the given file as soon as a hash signature repeats. The program then still keeps widening the board until the same signature is seen again. Then the file is read and compares to the column set. If they are different (which means we had a hash collision) the program dies with an error message. Otherwise it writes that general has been verified).
+
+If the given filename ends on C<.gz> the program will use module L<PerlIO::gzip|PerlIO::gzip> to compress/decompress the file. This saves roughly half of the disk space for large boards.
+
+Only with this option is the proof that the general rule for a board height works for B<every> board width absolutely complete.
 
 =item X<html>--html <file>
 

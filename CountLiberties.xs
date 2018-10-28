@@ -232,7 +232,7 @@ ALWAYS_INLINE int clz(any x) {
     if (sizeof(x) == sizeof(unsigned long long))
         return __builtin_clzll(x);
 #endif /* __GNUC__ */
-    int r = sizeof(x) * 8 - 1;
+    int r = sizeof(x) * CHAR_BIT - 1;
     if (x >> 32) {
         x >>= 32;
         r -= 32;
@@ -319,15 +319,16 @@ class CountLiberties {
     // typedef uint Stones;
     class Stones {
         friend CountLiberties;
+      public:
 #if UINT_MAX >> EXPANDED_SIZE
         typedef uint value_type;
 #else  // UINT_MAX >> EXPANDED_SIZE
         typedef uint64_t value_type;
 #endif // UINT_MAX >> EXPANDED_SIZE
-        static value_type const ONE = 1;
-      public:
         ALWAYS_INLINE
         Stones() {}
+        ALWAYS_INLINE
+        explicit Stones(value_type index): stones_{index} {}
 
         ALWAYS_INLINE
         explicit operator bool() const { return stones_ != 0; }
@@ -434,8 +435,7 @@ class CountLiberties {
         friend std::ostream& operator<<(std::ostream& os, Stones const& stones);
 
       private:
-        ALWAYS_INLINE
-        explicit Stones(value_type stones): stones_{stones} {}
+        static value_type const ONE = 1;
         value_type stones_;
     };
 
@@ -503,7 +503,7 @@ class CountLiberties {
             friend class Entry;
             friend class EntrySet;
           private:
-            static uint const shift64 = 8*(sizeof(uint64_t) - COMPRESSED_SIZE);
+            static uint const shift64 = CHAR_BIT*(sizeof(uint64_t) - COMPRESSED_SIZE);
             static uint64_t const column_mask64	= UINT64_C(-1) << shift64;
 
             // Repeated 01 bit pattern in the upper COMPRESSED_SIZE bytes
@@ -707,7 +707,7 @@ class CountLiberties {
         // (looking at Column bits, then history and then liberties)
         friend bool _less(CompressedColumn const& lhs, CompressedColumn const& rhs);
       protected:
-        static uint const shift8  = 8*(sizeof(uint64_t) - 1);
+        static uint const shift8  = sizeof(uint64_t) * CHAR_BIT - 8;
         static uint64_t const murmur_seed       = UINT64_C(0xc70f6907);
         static uint64_t const lcm_multiplier    = UINT64_C(6364136223846793005);
         static uint64_t const murmur_multiplier = UINT64_C(0xc6a4a7935bd1e995);
@@ -774,7 +774,7 @@ class CountLiberties {
 
             uint64_t seed =
                 murmur_seed ^
-                (static_cast<uint64_t>(from.index()) << sizeof(Liberties) * 8) ^
+                (static_cast<uint64_t>(from.index()) << sizeof(Liberties) * CHAR_BIT) ^
                 diff;
             return hash(seed);
         }
@@ -993,7 +993,7 @@ class CountLiberties {
                 shift_ = clz(target);
                 // Set all bits after the first one
                 target = (static_cast<size_type>(0) - 1) >> shift_;
-                shift_ += (sizeof(uint64_t) - sizeof(target)) * 8;
+                shift_ += (sizeof(uint64_t) - sizeof(target)) * CHAR_BIT;
             }
             // std::cout << "Really Reserve " << target+1 << "\n";
             if (target == mask_) return;
@@ -1580,6 +1580,9 @@ class CountLiberties {
             if (nr_entries(i)) ++nr_classes_non_empty;
         return nr_classes_non_empty;
     }
+    bool valid_class(Stones i) const {
+        return i <= reverse_bits_[i.index()];
+    }
     auto maximum_history(int bit) const {
         return max_entry_.history(bit);
     }
@@ -1650,6 +1653,8 @@ class CountLiberties {
     void topology_load_factor(float factor) {
         topology_load_multiplier_ = 1. / factor;
     }
+    void raw_class_bits(char *ptr, Stones stones) const COLD;
+
   private:
     void _call_asym(int direction, int pos, ThreadData& thread_data) HOT;
 
@@ -4028,6 +4033,49 @@ void CountLiberties::clear_filter() {
     filter_need_ = height() * target_width();
 }
 
+// Caller is responsible for allocating a large enough character array
+void CountLiberties::raw_class_bits(char *ptr, Stones stones) const {
+    auto& entries = class_entries(stones);
+    // Quickly check if there is anything to do
+    if (entries.empty()) return;
+    // Make a copy so we can sort without changin CountLiberties
+    auto entry_vector = entries;
+    std::sort(entry_vector.begin(), entry_vector.end(),
+              [](Entry const& lhs, Entry const& rhs) -> bool {
+                  // We really only want to sort on the column bits,
+                  // but since they are at the most significat bits we can
+                  // use sort on everything instead
+                  // return less(lhs, rhs);
+                  return _less(lhs, rhs);
+              });
+    int h = height() * BITS_PER_VERTEX - CHAR_BIT;
+    char byte = 0;
+    int bits_used = 0;
+    for (auto& entry: entry_vector) {
+        uint64_t value = entry.column();
+        byte |= value << bits_used;
+        // bits = bits_in_column - (CHAR_BIT - bits_used)
+        int bits = h + bits_used;
+        // new_bits_unused = bits_unused - bits_in_column = -bits
+        if (bits < 0) {
+            // new_bits_unused > 0 so we didn't fill the byte
+            bits_used = bits + CHAR_BIT;
+        } else {
+            // We filled the byte
+            *ptr++ = byte;
+            value >>= (CHAR_BIT - bits_used);
+            while (bits >= CHAR_BIT) {
+                *ptr++ = value;
+                value >>= CHAR_BIT;
+                bits -= CHAR_BIT;
+            }
+            byte = value;
+            bits_used = bits;
+        }
+    }
+    if (bits_used) *ptr++ = byte;
+}
+
 auto CountLiberties::all_topology_masks(Stones::value_type nr_classes) -> std::vector<CompressedColumn::Mask> {
     std::vector<CompressedColumn::Mask> topology_masks;
     topology_masks.reserve(nr_classes);
@@ -4264,13 +4312,53 @@ unsigned int
 CountLiberties::nr_classes_non_empty()
 
 UV
-CountLiberties::nr_entries()
-
-UV
 CountLiberties::nr_entries_min()
 
 UV
 CountLiberties::nr_entries_max()
+
+UV
+CountLiberties::nr_entries(UV i=0)
+  CODE:
+    if( items > 1) {
+        if (i >= THIS->nr_classes()) croak("class index too large");
+        auto index = static_cast<CountLiberties::Stones::value_type>(i);
+        RETVAL = THIS->nr_entries(CountLiberties::Stones{index});
+    } else
+        RETVAL = THIS->nr_entries();
+  OUTPUT:
+    RETVAL
+
+bool
+CountLiberties::valid_class(UV i)
+  CODE:
+    if (i >= THIS->nr_classes()) croak("class index too large");
+    auto index = static_cast<CountLiberties::Stones::value_type>(i);
+    CountLiberties::Stones stones{index};
+    RETVAL = THIS->valid_class(stones);
+  OUTPUT:
+    RETVAL
+
+SV*
+CountLiberties::raw_class_bits(UV i)
+  CODE:
+    if (i >= THIS->nr_classes()) croak("class index too large");
+    auto index = static_cast<CountLiberties::Stones::value_type>(i);
+    CountLiberties::Stones stones{index};
+    STRLEN nr_bytes = (THIS->nr_entries(stones) * THIS->height() * CountLiberties::BITS_PER_VERTEX + (CHAR_BIT - 1)) / CHAR_BIT;
+    if (nr_bytes == 0)
+        RETVAL = newSVpvn("", 0);
+    else {
+        RETVAL = newSV(nr_bytes);
+        SvUPGRADE(RETVAL, SVt_PV);
+        SvPOK_on(RETVAL);
+        SvCUR(RETVAL) = nr_bytes;
+        char* ptr = SvPV_nolen(RETVAL);
+        THIS->raw_class_bits(ptr, stones);
+        ptr[nr_bytes] = 0;
+    }
+  OUTPUT:
+    RETVAL
 
 void
 CountLiberties::keys()
@@ -4421,7 +4509,6 @@ CountLiberties::target_width(int target_width = 0)
     }
   OUTPUT:
     RETVAL
-
 
 IV
 CountLiberties::filter(int x, int y, int filter = 0)

@@ -9,7 +9,7 @@ count\_liberties - Calculate the maximum number of liberties one group on a go b
     count_liberties [--save_thread] [-t <threads>] [--threads <threads>] <other_options>
     count_liberties [--tcmalloc] [--jemalloc] [--llmalloc] [--libcmalloc] [--hugepages [mount_point]] <other_options>
     count_liberties [map_load_factor <float>] [topology_load_factor <float>]  <other_options>
-    count_liberties [--generalize] <other_options>
+    count_liberties [--generalize] [--paranoid <file>] <other_options>
     count_liberties [--html <file>] <other_options>
     count_liberties [--stats] [--dump] <other_options>
     count_liberties [--sizes] [--debug_max_size] [--debug_history] <other_options>
@@ -88,7 +88,17 @@ If no arguments are given it runs for all board heights from 1 to the maximum su
 
 - --generalize
 
-    Once all possibilities for a column repeat the program knows it has found the general ruie for any board width and the pattern will repeat from the first occurance of a column. But even before that column it can happen that the rule turns out to be still valid even if the possibilities for an earlier column where not the same. If this option is true (the default) the rule is presented as starting on the earliest such column.
+    Determine the general rule. This means the program keeps widening the board until the exact same column topology set repeats. Since each column topology set is follows exactly from the previous one this means from now on the columns keep repeating with a fixed growth pattern of the liberties.
+
+    By default the column sets are only compared using their hash signature. In principle this could give a false positive. While this is insanely unlikely (the chance your computer makes a mistake is higher), you can force a complete set compare by giving the [paranoia option](#paranoia).
+
+- --paranoia &lt;file>
+
+    If this option is given (while ["generalize" in generalize"](https://metacpan.org/pod/generalize&#x22;#generalize) is true) the column set is written to the given file as soon as a hash signature repeats. The program then still keeps widening the board until the same signature is seen again. Then the file is read and compares to the column set. If they are different (which means we had a hash collision) the program dies with an error message. Otherwise it writes that general has been verified).
+
+    If the given filename ends on `.gz` the program will use module [PerlIO::gzip](https://metacpan.org/pod/PerlIO::gzip) to compress/decompress the file. This saves roughly half of the disk space for large boards.
+
+    Only with this option is the proof that the general rule for a board height works for **every** board width absolutely complete.
 
 - --html &lt;file>
 

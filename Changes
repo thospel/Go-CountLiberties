@@ -1,6 +1,6 @@
 Revision history for Perl extension Go::CountLiberties.
 
-1.001	2018-10-25 22:19:13 UT
+1.001	2018-10-28 15:37:20 UT
 	- Also discover extra solutions by cutting at the left
 	- Get default number of threads from C++ library
 	- Add a --html option

@@ -8,8 +8,8 @@ use strict;
 use warnings;
 use vars qw($VERSION $SUB_VERSION $release_time %history);
 $VERSION = "1.001";
-$SUB_VERSION = "008";
-$release_time = 1540505953;	## no critic (UselessNoCritic MagicNumbers)
+$SUB_VERSION = "011";
+$release_time = 1540741040;	## no critic (UselessNoCritic MagicNumbers)
 %history = (
   'Changes' => {
     '1.000' => '1.000',
@@ -29,7 +29,8 @@ $release_time = 1540505953;	## no critic (UselessNoCritic MagicNumbers)
     '1.000' => '1.000'
   },
   'Makefile.PL' => {
-    '1.000' => '1.000'
+    '1.000' => '1.000',
+    '1.001' => '1.001'
   },
   'README' => {
     '1.000' => '1.000',

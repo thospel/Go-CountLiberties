@@ -7,7 +7,7 @@ use Getopt::Long;
 use File::Copy qw(copy);
 use ExtUtils::MakeMaker;
 
-our $VERSION = '1.000';
+our $VERSION = '1.001';
 
 local %MY::postamble;
 # Make these global so we can share them with any subdirectory Makefile.PLs
@@ -73,6 +73,11 @@ WriteMakefile
          # Only for the tests
 	 "Test::More"		=> "0.01",
      }) : (),
+     PREREQ_PM		=> {
+         "Time::HiRes"		=> "1.000",
+         # Optional
+         # "PerlIO::gzip"	=> "1.000",
+     },
      ABSTRACT		=> 'Count Maximum liberties of a group on a Go Board',
      AUTHOR		=> 'Ton Hospel <Go-CountLiberties@ton.iguana.be>',
      CC			=> $CC,
