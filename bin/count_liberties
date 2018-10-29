@@ -312,7 +312,7 @@ $history_bits > 0 || die "history_bits must be > 0";
 $history_bits <= $compiled_history_bits || die "history_bits must be <= the compiled in value of $compiled_history_bits";
 die "Paranoia must generalize" if $paranoid_file && !$generalize;
 my $paranoid_mode = ":raw";
-if ($paranoid_file =~ /\.gz\z/) {
+if ($paranoid_file && $paranoid_file =~ /\.gz\z/) {
     require PerlIO::gzip;
     $paranoid_mode = ":gzip";
 }
@@ -521,9 +521,9 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                     # print "[$x, $y] ", Dumper($counter->signature, { $counter->key_values});
                     print "[$x, $y] ", Dumper({ $counter->key_values}) if $dump;
                     if ($show_stats) {
-                        my $real_min = $counter->real_min;
-                        my $real_max = $counter->real_max;
-                        my $max_real_max = $counter->max_real_max;
+                        my $raw_min = $counter->raw_min;
+                        my $raw_max = $counter->raw_max;
+                        my $max_raw_max = $counter->max_raw_max;
                         my $offset   = $counter->_offset;
                         my $max = $counter->maximum;
                         # nr_entries_min is not very interesting, always in [1,4]
@@ -538,8 +538,8 @@ for my $height (@ARGV >= 2 ? $ARGV[0] .. $ARGV[1] :
                                    sprintf("F%s R%s ",
                                            $counter->filter($x-1, $y-1) == 0 ? " " : $counter->filter($x-1, $y-1) < 0 ? "0" : "1",
                                            $counter->record_map($x-1, $y-1) == -1 ? "  " : sprintf("%2d", $counter->record_map($x-1, $y-1))),
-                               $real_min, $max - $offset, $real_max,
-                               $max_real_max, $nr_entries, $nr_classes,
+                               $raw_min, $max - $offset, $raw_max,
+                               $max_raw_max, $nr_entries, $nr_classes,
                                $nr_entries/$nr_classes, $nr_entries_max);
                     }
                 }

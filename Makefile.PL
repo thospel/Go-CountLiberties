@@ -12,11 +12,13 @@ our $VERSION = '1.001';
 local %MY::postamble;
 # Make these global so we can share them with any subdirectory Makefile.PLs
 our ($gprof, $gcov, $sanitize_undefined, $stack_protector, $debug, $yes, $no, $help);
+our $aligned_new = 1;
 
 &Getopt::Long::config("bundling", "require_order");
 die "Could not parse your command line. Try $0 -h\n" unless
     GetOptions("gprof!"		=> \$gprof,
                "gcov!"		=> \$gcov,
+               "aligned_new!"	=> \$aligned_new,
                "sanitize_undefined!"	=> \$sanitize_undefined,
                "stack_protector!"	=> \$stack_protector,
                "debug!"		=> \$debug,
@@ -29,6 +31,7 @@ if ($debug) {
     # I Don't know how to get sanitize to work with shared libraries
     # $sanitize_undefined = 1;
 }
+$aligned_new = $aligned_new ? " -faligned-new" : "";
 $gprof = $gprof ? " -pg" : "";
 my $lib_gcov = $gcov ? " -lgcov" : "";
 $gcov  = $gcov ? " -fprofile-arcs -ftest-coverage" : "";
@@ -39,8 +42,8 @@ $sanitize_undefined  = $sanitize_undefined ? " -fsanitize=undefined" : "";
 $stack_protector = $stack_protector ? " -fstack-protector-strong" : " -fno-stack-protector";
 # -frename-registers  seems a loss
 my $optimize = $debug ?
-    "-g -fno-omit-frame-pointer$gprof$gcov$sanitize_undefined$stack_protector" :
-    "-g -O6 -march=native -finline-limit=100000 --param large-unit-insns=100000 --param large-function-growth=10000 --param large-stack-frame-growth=10000 -Winline -fstrict-aliasing -fno-math-errno -funsafe-math-optimizations -ffinite-math-only -ffast-math -fno-signed-zeros -fno-trapping-math$gprof$gcov$sanitize_undefined$stack_protector";
+    "-g -fno-omit-frame-pointer$aligned_new$gprof$gcov$sanitize_undefined$stack_protector" :
+    "-g -O6 -march=native -finline-limit=100000 --param large-unit-insns=100000 --param large-function-growth=10000 --param large-stack-frame-growth=10000 -Winline$aligned_new -fstrict-aliasing -fno-math-errno -funsafe-math-optimizations -ffinite-math-only -ffast-math -fno-signed-zeros -fno-trapping-math$gprof$gcov$sanitize_undefined$stack_protector";
 
 for my $file (qw(revision.cpp)) {
     next if -e $file;

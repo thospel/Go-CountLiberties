@@ -328,7 +328,7 @@ A table for all board sizes up to 24 x 24. Since it also has the general rule yo
 | **24** | 2 | 24 | 48 | 56 | 72 | 94 | 104 | 120 | 141 | 152 | 168 | 188 | 200 | 216 | 235 | 248 | 264 | 282 | 296 | 312 | 329 | **344** | 360 | _`376`_ | |  27 | 22 | +16 |**24** |
 | | **1** | **2** | **3** | **4** | **5** | **6** | **7** | **8** | **9** | **10** | **11** | **12** | **13** | **14** | **15** | **16** | **17** | **18** | **19** | **20** | **21** | **22** | **23** | **24** | | **repeat** | **from** | **rule** | |
 
-The start of the repeated pattern is indicated in **bold**. Square boards are indicated in *`italic`*. **repeat* is the first column whose column set will be repeated, **from** is the first column whose pattern of increases will be repeated, **rule** is the pattern of increases starting from **from**.
+The start of the repeated pattern is indicated in **bold**. Square boards are indicated in *`italic`*. **repeat** is the first column whose column set will be repeated, **from** is the first column whose pattern of increases will be repeated, **rule** is the pattern of increases starting from **from**.
 
 The table must obviously be symmetric and it's a nice check of the program that it indeed is.
 
@@ -559,7 +559,7 @@ Consider m x n boards with `m ≤ n`. We then have as cases:
 
     If all sides are larger than 3, any side is `2 (mod 3)` and the other side isn't a multiple of 3 then put a connecting bar along the `2 (mod 3)` side and have tines at distance 3 except for once at distance 2.
 
-Since running the program for all heights up to 24 agrees with these formulas this actually **proves** them for `m ≤ 24` and `m ≤ n` (remember that the program **proves** its result for a given board height for **all** widths). Don't forget to give the `--paranoid` option to have a real proof that can't be confused by a hash collision.
+Since running the program for all heights up to 24 agrees with these formulas this actually **proves** them for `m ≤ 24` and `m ≤ n` (remember that the program **proves** its result for a given board height for **all** widths). Don't forget to give the `--paranoid` option to have a real proof that can't be confused by a hash collision (it of course never discovers a hash collision, the chances of that were always negligible).
 
 ## Hypothesis
 
